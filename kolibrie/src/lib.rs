@@ -20,3 +20,5 @@ pub mod sliding_window;
 pub mod sparql_database;
 pub mod utils;
 pub mod volcano_optimizer;
+
+pub mod join_reordering;
