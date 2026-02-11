@@ -194,8 +194,9 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
@@ -384,8 +385,9 @@ pub fn execute_query_rayon_parallel2_volcano(
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
@@ -934,7 +936,11 @@ fn resolve_triple_pattern(
         };
 
         // For a normal triple pattern, resolve predicate and object
-        let resolved_predicate = database.resolve_query_term(predicate, prefixes);
+        let resolved_predicate = if predicate == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
+        } else {
+            database.resolve_query_term(predicate, prefixes)
+        };
 
         // Resolve object if it's not a variable
         let resolved_object = if object_var.starts_with('?') {

@@ -46,6 +46,7 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
+        variable,
         recognize((char(':'), identifier)),
         prefixed_identifier,
         tag("a"),
@@ -106,7 +107,14 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     pairs.extend(rest_po);
 
     // Convert each pair into a triple by reusing the same subject
-    let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
+    let triples = pairs.into_iter().map(|(p, o)| {
+        let resolved_p = if p == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+        } else {
+            p
+        };
+        (subject, resolved_p, o)
+    }).collect();
 
     Ok((input, triples))
 }
@@ -1713,13 +1721,10 @@ pub fn process_rule_definition(
     database.register_prefixes_from_query(rule_input);
 
     let mut kg = Reasoner::new();
+    kg.dictionary = database.dictionary.clone();
+    
     for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
-            kg.add_abox_triple(&s, &p, &o);
-        }
+        kg.index_manager.insert(triple);
     }
 
     // Parse the standalone rule
@@ -1735,7 +1740,8 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut kg.dictionary, &rule_prefixes);
+        database.dictionary = kg.dictionary.clone();
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {

@@ -1,6 +1,11 @@
 /*
- * Copyright © 2026 Stream Intelligence Lab
+ * Copyright © 2026 Volodymyr Kadzhaia
+ * Copyright © 2026 Pieter Bonte
  * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
 use std::io::{Read, Write};
@@ -18,6 +23,13 @@ struct QueryRequest {
     rdf: Option<String>,
     #[serde(default)]
     rule: Option<String>,
+    #[serde(default = "default_format")]
+    format: String,
+}
+
+// Default format is RDF/XML for backwards compatibility
+fn default_format() -> String {
+    "rdfxml".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -126,6 +138,7 @@ fn execute_sparql_with_context(body: &str) -> String {
 
     println!("Received query request:");
     println!("  SPARQL: {} chars", request.sparql.len());
+    println!("  Format: {}", request.format);
     if let Some(ref rdf) = request.rdf {
         println!("  RDF: {} chars", rdf.len());
     }
@@ -134,20 +147,55 @@ fn execute_sparql_with_context(body: &str) -> String {
     }
 
     let mut database = SparqlDatabase::new();
+    let use_optimizer = request.format == "ntriples";
     
     if let Some(rdf_data) = request.rdf {
         if !rdf_data.trim().is_empty() {
-            println!("Parsing RDF data...");
-            database.parse_rdf(&rdf_data);
-            
-            // Get statistics and build indexes
-            println!("Building statistics...");
-            database.get_or_build_stats();
-            println!("Building indexes...");
-            database.build_all_indexes();
-            
-            // Debug: Check triple count
-            println!("✓ RDF data loaded, triple count: {}", database.triples.len());
+            // Parse based on format
+            match request.format.as_str() {
+                "ntriples" => {
+                    println!("Parsing N-Triples data...");
+                    database.parse_ntriples_and_add(&rdf_data);
+                    
+                    // CRITICAL: N-Triples MUST use optimizer
+                    println!("Building statistics for Streamertail optimizer (required for N-Triples)...");
+                    database.get_or_build_stats();
+                    println!("Building indexes...");
+                    database.build_all_indexes();
+                    
+                    println!("✓ N-Triples data loaded with optimizer, triple count: {}", database.triples.len());
+                    
+                    // DEBUG: Print all triples
+                    println!("DEBUG: Database triples:");
+                    for (i, triple) in database.triples.iter().enumerate() {
+                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
+                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
+                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
+                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
+                    }
+                }
+                "rdfxml" | _ => {
+                    println!("Parsing RDF/XML data...");
+                    database.parse_rdf(&rdf_data);
+                    
+                    // Get statistics and build indexes
+                    println!("Building statistics...");
+                    database.get_or_build_stats();
+                    println!("Building indexes...");
+                    database.build_all_indexes();
+                    
+                    println!("✓ RDF/XML data loaded, triple count: {}", database.triples.len());
+                    
+                    // DEBUG: Print all triples
+                    println!("DEBUG: Database triples:");
+                    for (i, triple) in database.triples.iter().enumerate() {
+                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
+                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
+                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
+                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
+                    }
+                }
+            }
         }
     }
     
@@ -156,7 +204,7 @@ fn execute_sparql_with_context(body: &str) -> String {
             println!("Processing rule...");
             match process_rule_definition(&rule_def, &mut database) {
                 Ok((_, inferred_facts)) => {
-                    println!("✓ Rule processed, inferred {} facts", inferred_facts.len());
+                    println!("Rule processed, inferred {} facts", inferred_facts.len());
                     
                     // IMPORTANT: Rebuild stats after adding inferred facts
                     if !inferred_facts.is_empty() {
@@ -167,28 +215,30 @@ fn execute_sparql_with_context(body: &str) -> String {
                     }
                 }
                 Err(e) => {
-                    eprintln!("⚠ Rule processing error: {:?}", e);
+                    eprintln!("Rule processing error: {:?}", e);
                 }
             }
         }
     }
     
-    println!("Executing SPARQL query with Volcano optimizer...");
+    // Execute query with appropriate executor
+    let executor_name = if use_optimizer { "Streamertail optimizer" } else { "Streamertail optimizer (fallback mode)" };
+    println!("Executing SPARQL query with {}...", executor_name);
     println!("Query: {}", request.sparql);
     
-    // Try volcano optimizer first, fallback to regular if it fails
+    // N-Triples MUST use volcano optimizer, RDF/XML tries it with fallback
     let results = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         execute_query_rayon_parallel2_volcano(&request.sparql, &mut database)
     })) {
         Ok(res) => {
-            println!("✓ Volcano optimizer executed successfully, {} results", res.len());
+            println!("Streamertail optimizer executed successfully, {} results", res.len());
             res
         }
         Err(e) => {
-            eprintln!("⚠ Volcano optimizer failed: {:?}, falling back to regular executor", e);
+            eprintln!("Streamertail optimizer failed: {:?}, falling back to regular executor", e);
             println!("Executing with regular query executor...");
             let res = execute_query(&request.sparql, &mut database);
-            println!("✓ Regular executor completed, {} results", res.len());
+            println!("Regular executor completed, {} results", res.len());
             res
         }
     };
@@ -200,7 +250,7 @@ fn execute_sparql_with_context(body: &str) -> String {
             println!("  Row {}: {:?}", i + 1, row);
         }
     } else {
-        println!("⚠ Query returned 0 results!");
+        println!("Query returned 0 results!");
         println!("Database has {} triples", database.triples.len());
     }
     
