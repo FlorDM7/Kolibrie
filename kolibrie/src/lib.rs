@@ -24,3 +24,6 @@ pub mod utils;
 pub mod streamertail_optimizer;
 pub mod rsp;
 pub mod query_engine;
+
+// Query plan optimization
+pub mod join_reordering;
