@@ -21,32 +21,38 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 
     // Add some triples about people
 
+    // Acquire write lock on dictionary for all encoding operations
+    let mut dict = database.dictionary.write().unwrap();
+
     // Subjects
-    let alice_id = database.dictionary.encode("http://example.org/alice");
-    let bob_id = database.dictionary.encode("http://example.org/bob");
-    let charlie_id = database.dictionary.encode("http://example.org/charlie");
+    let alice_id = dict.encode("http://example.org/alice");
+    let bob_id = dict.encode("http://example.org/bob");
+    let charlie_id = dict.encode("http://example.org/charlie");
 
     // Predicates
-    let name_id = database.dictionary.encode("http://example.org/name");
-    let age_id = database.dictionary.encode("http://example.org/age");
-    let works_at_id = database.dictionary.encode("http://example.org/worksAt");
+    let name_id = dict.encode("http://example.org/name");
+    let age_id = dict.encode("http://example.org/age");
+    let works_at_id = dict.encode("http://example.org/worksAt");
 
     // Objects
-    let alice_name = database.dictionary.encode("Alice");
-    let bob_name = database.dictionary.encode("Bob");
-    let charlie_name = database.dictionary.encode("Charlie");
-    let age_25 = database.dictionary.encode("25");
-    let age_30 = database.dictionary.encode("30");
-    let age_35 = database.dictionary.encode("35");
-    let age_36 = database.dictionary.encode("36");
-    let age_37 = database.dictionary.encode("37");
-    let age_38 = database.dictionary.encode("38");
-    let age_39 = database.dictionary.encode("39");
-    let age_40 = database.dictionary.encode("40");
-    let age_41 = database.dictionary.encode("41");
-    let age_42 = database.dictionary.encode("42");
-    let company_id = database.dictionary.encode("http://example.org/company");
-    let company2_id = database.dictionary.encode("http://example.org/company2");
+    let alice_name = dict.encode("Alice");
+    let bob_name = dict.encode("Bob");
+    let charlie_name = dict.encode("Charlie");
+    let age_25 = dict.encode("25");
+    let age_30 = dict.encode("30");
+    let age_35 = dict.encode("35");
+    let age_36 = dict.encode("36");
+    let age_37 = dict.encode("37");
+    let age_38 = dict.encode("38");
+    let age_39 = dict.encode("39");
+    let age_40 = dict.encode("40");
+    let age_41 = dict.encode("41");
+    let age_42 = dict.encode("42");
+    let company_id = dict.encode("http://example.org/company");
+    let company2_id = dict.encode("http://example.org/company2");
+
+    // Release lock early
+    drop(dict);
 
     // Add triples
     // Alice is Alice
@@ -157,9 +163,15 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 fn multiple_join_query(database: &mut SparqlDatabase) {
     println!("=== Example: Multiple Join Query ===");
 
-    let name_id = database.dictionary.encode("http://example.org/name");
-    let age_id = database.dictionary.encode("http://example.org/age");
-    let works_at_id = database.dictionary.encode("http://example.org/worksAt");
+    // Get lock
+    let mut dict = database.dictionary.write().unwrap();
+
+    let name_id = dict.encode("http://example.org/name");
+    let age_id = dict.encode("http://example.org/age");
+    let works_at_id = dict.encode("http://example.org/worksAt");
+
+    // Release lock early
+    drop(dict);
 
     // Create a logical plan: join names with ages with company 
     let name_scan = LogicalOperator::scan((
@@ -254,22 +266,22 @@ fn example_multiple_join_query() {
 
 // vibe
 fn create_logical_plan(database: &mut SparqlDatabase) -> PhysicalOperator {
-    let rdf_type_id = database
-        .dictionary
+    // Acquire write lock on dictionary for all encoding operations
+    let mut dict = database.dictionary.write().unwrap();
+
+    let rdf_type_id = dict
         .encode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
-    let temperature_sensor_id = database
-        .dictionary
+    let temperature_sensor_id = dict
         .encode("http://example.org/TemperatureSensor");
-    let located_in_id = database
-        .dictionary
+    let located_in_id = dict
         .encode("http://example.org/locatedIn");
-    let has_reading_id = database
-        .dictionary
+    let has_reading_id = dict
         .encode("http://example.org/hasReading");
-    let value_id = database.dictionary.encode("http://example.org/value");
-    let timestamp_id = database
-        .dictionary
+    let value_id = dict.encode("http://example.org/value");
+    let timestamp_id = dict
         .encode("http://example.org/timestamp");
+
+    drop(dict);
 
     // Create the logical plan from the SPARQL query.
     let location_scan = LogicalOperator::scan((
@@ -331,17 +343,21 @@ fn build_window_db(source: &mut SparqlDatabase, window_size: u64) -> SparqlDatab
     window_db.dictionary = source.dictionary.clone();
     window_db.prefixes = source.prefixes.clone();
 
+    // Acquire write lock on dictionary for all encoding operations
+    let mut dict = source.dictionary.write().unwrap();
     // Find timestamp predicate ID
-    let timestamp_id = source.dictionary.encode("http://example.org/timestamp");
+    let timestamp_id = dict.encode("http://example.org/timestamp");
     
     // Extract all unique timestamps from the dataset
     let mut timestamps: Vec<String> = Vec::new();
     for triple in &source.triples {
         if triple.predicate == timestamp_id {
-            let timestamp_str = source.dictionary.decode(triple.object);
+            let timestamp_str = dict.decode(triple.object);
             timestamps.push(timestamp_str.unwrap().into());
         }
     }
+
+    drop(dict);
     
     // Sort timestamps
     timestamps.sort();
@@ -356,11 +372,17 @@ fn build_window_db(source: &mut SparqlDatabase, window_size: u64) -> SparqlDatab
         return window_db;
     }
     
+    // Acquire write lock on dictionary for all encoding operations
+    let mut dict = source.dictionary.write().unwrap();
+
     // Create a set of timestamp IDs in the window for fast lookup
     let window_timestamp_ids: std::collections::HashSet<u32> = window_timestamps
         .iter()
-        .map(|ts| source.dictionary.encode(ts))
+        .map(|ts| dict.encode(ts))
         .collect();
+
+    // Drop lock early
+    drop(dict);
     
     // Filter triples: keep those with timestamps in the window
     for triple in &source.triples {
