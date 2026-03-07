@@ -1,5 +1,6 @@
 extern crate kolibrie;
-use kolibrie::{execute_query::{execute_query, parse_sparql_to_logical_plan}, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, build_logical_plan}};
+use kolibrie::{execute_query::{execute_query, parse_sparql_to_logical_plan}, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, build_logical_plan}};
+use kolibrie::streamertail_optimizer::PhysicalOperator;
 use shared::triple::Triple;
 use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
@@ -94,15 +95,40 @@ WHERE {
             .build()
             .expect("Failed to build RSP engine");
 
+    // Example runtime adaptor: inspect each fired window and optionally swap plan.
+    // This keeps it conservative: only swap a top-level ParallelJoin to HashJoin
+    // once the window gets "large enough".
+    engine.set_window_plan_adaptor(Arc::new(
+        |window_iri, content: &ContentContainer<Triple>, ts, current_plan| {
+            let window_size = content.len();
+            println!(
+                "[Adaptor] window={} ts={} tuples_in_window={}",
+                window_iri, ts, window_size
+            );
+            
+            // Keep the existing plan unchanged
+            if window_size < 50 {
+                return None;
+            }
+
+            // Calculate a new plan
+            println!("[Adaptor] Recalculate plan for {}", window_iri);
+
+            return None;
+        },
+    ));
+
     // Print per window physical query plan
     let window_info = engine.get_window_info();
     let query_plan = engine.get_query_plan();
     println!("Per-window physical plans:");
+    let plans_guard = query_plan.window_plans.read().unwrap();
     for (idx, window) in window_info.iter().enumerate() {
-        if let Some(plan) = query_plan.window_plans.get(idx) {
+        if let Some(plan) = plans_guard.get(idx) {
             println!("  {} -> {:?}", window.window_iri, plan);
         }
     }
+    drop(plans_guard);
 
     // small hack to make sure the encoder is aligned between parsing and query injection
     // engine.parse_data("a a <http://www.w3.org/test/SuperType> .");

@@ -18,7 +18,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use crossbeam::channel::{unbounded, RecvTimeoutError, Receiver, Sender};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Instant;
 #[cfg(test)]
@@ -58,7 +58,7 @@ pub struct RSPWindow {
 /// RSP-QL Query Plan using Volcano optimizer
 #[derive(Debug, Clone)]
 pub struct RSPQueryPlan {
-    pub window_plans: Vec<PhysicalOperator>,
+    pub window_plans: Arc<RwLock<Vec<PhysicalOperator>>>, // windows plan are shared
     pub static_data_plan: Option<PhysicalOperator>,
 }
 
@@ -74,15 +74,44 @@ pub struct ResultConsumer<I> {
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
 }
 
+pub type WindowPlanAdaptor<I> = Arc<
+    dyn Fn(&str, &ContentContainer<I>, usize, &PhysicalOperator) -> Option<PhysicalOperator>
+        + Send
+        + Sync,
+>;
+
 /// Macro to generate the window processing logic
 macro_rules! create_window_processor {
-    ($window_iri:expr, $query:expr, $query_execution_mode:expr,
-     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {{
+    ($window_iri:expr, $query_execution_mode:expr,
+     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr,
+     $window_idx:expr, $window_plans:expr, $window_plan_adaptor:expr) => {{
         let mut prev_window_triples: Vec<I> = Vec::new();
         move |content: ContentContainer<I>| {
+            let mut query = {
+                let plans = $window_plans.read().unwrap();
+                plans[$window_idx].clone()
+            };
+
+            let adaptor = {
+                let guard = $window_plan_adaptor.read().unwrap();
+                guard.clone()
+            };
+
+            if let Some(adaptor) = adaptor {
+                if let Some(new_plan) = adaptor(&$window_iri, &content, content.get_last_timestamp_changed(), &query) {
+                    {
+                        let mut plans = $window_plans.write().unwrap();
+                        if $window_idx < plans.len() {
+                            plans[$window_idx] = new_plan.clone();
+                        }
+                    }
+                    query = new_plan;
+                }
+            }
+
             debug!(
                 "Processing window {} with query: {:?} using {:?} execution",
-                $window_iri, $query, $query_execution_mode
+                $window_iri, query, $query_execution_mode
             );
 
             let ts = content.get_last_timestamp_changed();
@@ -100,7 +129,7 @@ macro_rules! create_window_processor {
                 store.add(t);
             }
 
-            let results = store.execute_query(&$query);
+            let results = store.execute_query(&query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
 
             // Release lock early to reduce contention
@@ -177,6 +206,7 @@ where
     window_result_receiver: Receiver<WindowResult>,
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
+    window_plan_adaptor: Arc<RwLock<Option<WindowPlanAdaptor<I>>>>,
     /// Latest materialized results per window (replace semantics); SingleThread only.
     single_thread_last_materialized: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
     /// Synchronization policy governing multi-window coordination.
@@ -273,6 +303,7 @@ where
             window_result_sender: result_sender,
             window_result_receiver: result_receiver,
             rsp_query_plan,
+            window_plan_adaptor: Arc::new(RwLock::new(None)),
             single_thread_last_materialized: Arc::new(Mutex::new(HashMap::new())),
             sync_policy,
             static_db,
@@ -300,12 +331,13 @@ where
             || self.rsp_query_plan.static_data_plan.is_some();
 
         for (window_idx, window) in self.windows.iter_mut().enumerate() {
-            let query = self.rsp_query_plan.window_plans[window_idx].clone();
             let window_iri = self.window_configs[window_idx].window_iri.clone();
             let window_iri_for_thread = window_iri.clone(); // Clone for MultiThread usage
             let query_execution_mode = self.query_execution_mode;
             let window_result_sender = self.window_result_sender.clone();
             let r2r_store = self.r2r.clone();
+            let window_plans = Arc::clone(&self.rsp_query_plan.window_plans);
+            let window_plan_adaptor = Arc::clone(&self.window_plan_adaptor);
 
             let r2s_consumer_func = if has_joins {
                 Arc::new(|_| {}) as Arc<dyn Fn(O) + Send + Sync>
@@ -316,12 +348,14 @@ where
             // Create processor using macro
             let mut processor = create_window_processor!(
                 window_iri,
-                query,
                 query_execution_mode,
                 r2r_store,
                 has_joins,
                 window_result_sender,
-                r2s_consumer_func
+                r2s_consumer_func,
+                window_idx,
+                window_plans,
+                window_plan_adaptor
             );
 
             // Register based on mode
@@ -583,6 +617,23 @@ where
     /// Return the stream IRIs registered across all configured windows.
     pub fn stream_iris(&self) -> Vec<String> {
         self.window_configs.iter().map(|w| w.stream_iri.clone()).collect()
+    }
+
+    /// Register a runtime hook that can inspect window content at trigger-time
+    /// and optionally return a replacement physical plan for that window.
+    ///
+    /// The hook is called just before executing a firing for a window.
+    pub fn set_window_plan_adaptor(&mut self, adaptor: WindowPlanAdaptor<I>) {
+        let mut guard = self.window_plan_adaptor.write().unwrap();
+        *guard = Some(adaptor);
+    }
+
+    /// Replace a specific window's physical plan at runtime.
+    pub fn update_window_plan(&self, window_idx: usize, new_plan: PhysicalOperator) {
+        let mut plans = self.rsp_query_plan.window_plans.write().unwrap();
+        if window_idx < plans.len() {
+            plans[window_idx] = new_plan;
+        }
     }
 }
 
