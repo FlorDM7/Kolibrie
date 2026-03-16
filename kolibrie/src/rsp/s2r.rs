@@ -133,6 +133,15 @@ where
         let map = mem::take(&mut self.elements);
         map.into_iter()
     }
+
+    // Add constructor to use in tests
+    pub(crate) fn from_items(items: impl IntoIterator<Item = I>, ts:usize) -> ContentContainer<I> {
+        let mut container = ContentContainer::new(); // use private constructor
+        for item in items {
+            container.add(item, ts); // add items to container with a given time stamp
+        }
+        container
+    }
 }
 
 pub struct CSPARQLWindow<I>
