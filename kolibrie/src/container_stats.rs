@@ -51,6 +51,26 @@ impl ContainerStats {
         }
     }
 
+    // Get the total amount of triples
+    pub fn get_total_triples(&self) -> u64 {
+        self.total_triples
+    }
+
+    // Gets the amount of unique objects
+    pub fn get_total_objects(&self) -> usize {
+        self.object_cardinalities.keys().len()
+    }
+
+    // Gets the amount of unique predicates
+    pub fn get_total_predicates(&self) -> usize {
+        self.predicate_cardinalities.keys().len()
+    }
+
+    // Gets the amount of unique subjects
+    pub fn get_total_subjects(&self) -> usize {
+        self.subject_cardinalities.keys().len()
+    }
+
     // Gets the cardinality for an object
     pub fn get_object_cardinality(&self, object: u32) -> u64 {
         self.object_cardinalities.get(&object).copied().unwrap_or(0)
@@ -61,7 +81,7 @@ impl ContainerStats {
         self.predicate_cardinalities.get(&predicate).copied().unwrap_or(0)
     }
 
-    /// Gets the cardinality for an subject
+    // Gets the cardinality for an subject
     pub fn get_subject_cardinality(&self, subject: u32) -> u64 {
         self.subject_cardinalities.get(&subject).copied().unwrap_or(0)
     }
@@ -94,9 +114,9 @@ mod tests {
 
         // contains no triples
         assert_eq!(stats.total_triples, 0);
-        assert_eq!(stats.object_cardinalities.keys().len(), 0);
-        assert_eq!(stats.predicate_cardinalities.keys().len(), 0);
-        assert_eq!(stats.subject_cardinalities.keys().len(), 0);
+        assert_eq!(stats.get_total_objects(), 0);
+        assert_eq!(stats.get_total_predicates(), 0);
+        assert_eq!(stats.get_total_subjects(), 0);
     }
 
     #[test]
@@ -123,9 +143,9 @@ mod tests {
         let stats = ContainerStats::gather_stats(&container);
         
         assert_eq!(stats.total_triples, 3);
-        assert_eq!(stats.object_cardinalities.keys().len(), 3);
-        assert_eq!(stats.predicate_cardinalities.keys().len(), 2);
-        assert_eq!(stats.subject_cardinalities.keys().len(), 2);
+        assert_eq!(stats.get_total_objects(), 3);
+        assert_eq!(stats.get_total_predicates(), 2);
+        assert_eq!(stats.get_total_subjects(), 2);
 
         assert_eq!(stats.get_object_cardinality(5), 1);
         assert_eq!(stats.get_object_cardinality(6), 1);

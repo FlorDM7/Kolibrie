@@ -1,6 +1,5 @@
 extern crate kolibrie;
-use kolibrie::{execute_query::{execute_query, parse_sparql_to_logical_plan}, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, build_logical_plan}};
-use kolibrie::streamertail_optimizer::PhysicalOperator;
+use kolibrie::{container_stats::ContainerStats, execute_query::parse_sparql_to_logical_plan, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, LogicalOperator}};
 use shared::triple::Triple;
 use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
@@ -47,14 +46,14 @@ fn example_static(path: String) {
 }
 
 fn example_window(path: String) {
-    // create empty database
+    // // create empty database
     // let mut db = SparqlDatabase::new();
 
-    // read file with turtle data
-    // let binding = read_to_string(path).expect("failed to read .nt file");
+    // // read file with turtle data
+    // let binding = read_to_string(path.clone()).expect("failed to read .nt file");
     // let turtle_data = binding.as_str();
 
-    // parse N-Triples data
+    // // parse N-Triples data
     // db.parse_ntriples_and_add(turtle_data);
 
     // sparql query
@@ -76,6 +75,22 @@ WHERE {
     FILTER(?value > 25)
 }"#;
 
+    // let logical_plan = parse_sparql_to_logical_plan(rsp_ql_query, &mut db).expect("Parse went wrong");
+    // let logical_plan_clone = logical_plan.clone();
+    // let logical_plan_clone = match parse_sparql_to_logical_plan(rsp_ql_query, &mut db) {
+    //     Ok(plan) => Some(plan),
+    //     Err(err) => {
+    //         eprintln!(
+    //             "[Adaptor] Could not build logical plan from full RSP-QL query: {}",
+    //             err
+    //         );
+    //         eprintln!(
+    //             "[Adaptor] Continuing without adaptive replanning; engine query execution still runs."
+    //         );
+    //         None
+    //     }
+    // };
+
     // Collect results via a shared container that the engine writes into.
     let result_container = Arc::new(Mutex::new(Vec::new()));
     let result_container_clone = Arc::clone(&result_container);
@@ -92,43 +107,80 @@ WHERE {
             .add_rsp_ql_query(rsp_ql_query)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
             .build()
             .expect("Failed to build RSP engine");
+
+    // View logical plan per window here
+    let window_info = engine.get_window_info();
+    let window_plans: Vec<LogicalOperator> = window_info.iter().map(|w| {
+        w.query.clone()
+    }).collect();
+    let logical_plan = window_plans.first().unwrap().clone();
+
 
     // Example runtime adaptor: inspect each fired window and optionally swap plan.
     // This keeps it conservative: only swap a top-level ParallelJoin to HashJoin
     // once the window gets "large enough".
     engine.set_window_plan_adaptor(Arc::new(
-        |window_iri, content: &ContentContainer<Triple>, ts, current_plan| {
+        move |window_iri, content: &ContentContainer<Triple>, ts, current_plan| {
             let window_size = content.len();
             println!(
                 "[Adaptor] window={} ts={} tuples_in_window={}",
                 window_iri, ts, window_size
             );
-            
-            // Keep the existing plan unchanged
-            if window_size < 50 {
-                return None;
+
+            // // Create temporary database
+            // let mut temp_db = SparqlDatabase::new();
+            // for triple in content.iter() {
+            //     temp_db.add_triple(triple.clone());
+            // }
+            // // Count amount of triples that got registered
+            // let stats = DatabaseStats::gather_stats_fast(&mut temp_db);
+
+            // Get container stats
+            let stats = ContainerStats::gather_stats(content);  
+            // Take a quick look at the stats  
+            println!("Total: {}, Cardinalities: {}, {}, {}",
+                stats.get_total_triples(),
+                stats.get_total_subjects(),
+                stats.get_total_predicates(),
+                stats.get_total_objects()
+            );     
+
+            // Plan gets recalculated
+            // if let Some(logical_plan) = &logical_plan_clone {
+            //     let new_plan = join_reordering::naive_reordering(logical_plan.clone(), &mut temp_db); // does not work for query plan with windows
+            //     println!("[Adaptor] Recalculate plan for {}", window_iri);
+            //     println!("{:?}", new_plan);
+            //     return Some(new_plan);
+            // }
+
+            // Calculate a potential new plan 
+            if ts % 2 == 0 { // only do this under a certain condition (TBD)
+                let new_plan = join_reordering::pick_some_plan(logical_plan.clone());
+                println!("[Adaptor] Recalculate plan for {}", window_iri);
+                println!("{:?}", new_plan);
+                return Some(new_plan);
             }
-
-            // Calculate a new plan
-            println!("[Adaptor] Recalculate plan for {}", window_iri);
-
+            
+            // Plan remains the same
+            println!("[Adaptor] Plan remains the same {}", window_iri);
             return None;
         },
     ));
 
-    // Print per window physical query plan
-    let window_info = engine.get_window_info();
-    let query_plan = engine.get_query_plan();
-    println!("Per-window physical plans:");
-    let plans_guard = query_plan.window_plans.read().unwrap();
-    for (idx, window) in window_info.iter().enumerate() {
-        if let Some(plan) = plans_guard.get(idx) {
-            println!("  {} -> {:?}", window.window_iri, plan);
-        }
-    }
-    drop(plans_guard);
+    // // Print per window physical query plan
+    // let window_info = engine.get_window_info();
+    // let query_plan = engine.get_query_plan();
+    // println!("Per-window physical plans:");
+    // let plans_guard = query_plan.window_plans.read().unwrap();
+    // for (idx, window) in window_info.iter().enumerate() {
+    //     if let Some(plan) = plans_guard.get(idx) {
+    //         println!("  {} -> {:?}", window.window_iri, plan);
+    //     }
+    // }
+    // drop(plans_guard);
 
     // small hack to make sure the encoder is aligned between parsing and query injection
     // engine.parse_data("a a <http://www.w3.org/test/SuperType> .");
@@ -150,9 +202,6 @@ WHERE {
     let results = result_container.lock().unwrap();
 
     println!("RSP result batches: {}", results.len());
-    
-    // TODO use my optimizer
-    // let physical_plan = join_reordering::naive_reordering(logical_plan, &mut db);
 }
 
 fn main() {

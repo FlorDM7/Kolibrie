@@ -23,7 +23,7 @@ use shared::rule::Rule;
 use shared::terms::Term;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// RSP Query configuration extracted from parsed RSP-QL
 #[derive(Debug)]
@@ -288,10 +288,12 @@ where
 
         println!("logical window plans {:?}", window_plans);
 
-        let window_plans = window_plans
-            .iter()
-            .map(|v| optimizer.find_best_plan(v))
-            .collect();
+        let window_plans = Arc::new(RwLock::new(
+            window_plans
+                .iter()
+                .map(|v| optimizer.find_best_plan(v))
+                .collect()
+        ));
         println!("physical window plans {:?}", window_plans);
 
         Ok(RSPQueryPlan {

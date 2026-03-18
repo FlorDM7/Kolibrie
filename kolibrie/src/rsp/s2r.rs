@@ -134,7 +134,8 @@ where
         map.into_iter()
     }
 
-    // Add constructor to use in tests
+    // Add a constructor to use in tests
+    #[cfg(test)]
     pub(crate) fn from_items(items: impl IntoIterator<Item = I>, ts:usize) -> ContentContainer<I> {
         let mut container = ContentContainer::new(); // use private constructor
         for item in items {

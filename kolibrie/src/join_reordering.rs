@@ -7,6 +7,12 @@ use std::collections::HashSet;
  Generate all possible join reoderings and pick the "best" one
  */
 
+pub fn pick_some_plan(logical_plan: LogicalOperator) -> PhysicalOperator {
+    let plans = generate_all_reorderings(&logical_plan);
+    let plan = plans.last().unwrap();
+    logical_to_physical(plan.clone())
+}
+
 pub fn naive_reordering(logical_plan: LogicalOperator, db: &mut SparqlDatabase) -> PhysicalOperator {
     let plans = generate_all_reorderings(&logical_plan);
     pick_best_one(plans, db)
@@ -21,8 +27,6 @@ pub fn pick_best_one(plans: Vec<LogicalOperator>, db: &mut SparqlDatabase) -> Ph
     for plan in plans {
         let physical_plan = logical_to_physical(plan); // Turn into fysical operators 
         let cost = estimator.estimate_cost(&physical_plan); // Estimate cost
-        // dbg!(cost);
-        // dbg!(&physical_plan);
         if cost < minimum_estimated_cost {
             result = physical_plan;
             minimum_estimated_cost = cost; // Minimalize cost
