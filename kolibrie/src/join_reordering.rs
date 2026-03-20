@@ -331,3 +331,55 @@ fn is_scan_subtree(plan: &LogicalOperator) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::terms::Term;
+
+    #[test]
+    fn test_generate_all_reorderings() {
+        // Similar to example in simple_volcano.rs
+
+        let mut database = SparqlDatabase::new();
+        let mut dict = database.dictionary.write().unwrap(); // Get lock
+        let name_id = dict.encode("http://example.org/name");
+        let age_id = dict.encode("http://example.org/age");
+        let works_at_id = dict.encode("http://example.org/worksAt");
+        drop(dict); // Release lock early
+
+        // Create a logical plan: join names with ages with company 
+        let name_scan = LogicalOperator::scan((
+            Term::Variable("person".to_string()),
+            Term::Constant(name_id),
+            Term::Variable("name".to_string()),
+        ));
+
+        let age_scan = LogicalOperator::scan((
+            Term::Variable("person".to_string()),
+            Term::Constant(age_id),
+            Term::Variable("age".to_string()),
+        ));
+
+        let company_scan = LogicalOperator::scan((
+            Term::Variable("person".to_string()),
+            Term::Constant(works_at_id),
+            Term::Variable("company".to_string()),
+        ));
+
+        let plan = LogicalOperator::join(name_scan, age_scan);
+        let plan = LogicalOperator::join(plan, company_scan);
+
+        /*
+        Logical plan:
+                     join
+                    /    \
+                 join   scan(company)
+                /    \
+        scan(name)  scan(age) 
+        */
+
+        let plans = generate_all_reorderings(&plan);
+        assert_eq!(plans.len(), 3); // number of possible combinations
+    }
+}
