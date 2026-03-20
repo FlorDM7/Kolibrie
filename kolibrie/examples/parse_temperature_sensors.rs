@@ -5,22 +5,22 @@ use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
 
 fn example_static(path: String) {
-    // create empty database
+    // Create empty database
     let mut db = SparqlDatabase::new();
 
-    // read file with turtle data
+    // Read file with turtle data
     let binding = read_to_string(path).expect("failed to read .nt file");
     let turtle_data = binding.as_str();
 
-    // parse N-Triples data
+    // Parse N-Triples data
     db.parse_ntriples_and_add(turtle_data);
 
-    // get stats from data
+    // Get stats from data
     let stats = DatabaseStats::gather_stats_fast(&db);
 
     println!("Total: {}", stats.total_triples);
 
-    // sparql query
+    // SPARQL query
     let sparql = r#"  PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
                             PREFIX ex: <http://example.org/>
                             SELECT ?sensor ?location ?reading ?timestamp
@@ -46,18 +46,8 @@ fn example_static(path: String) {
 }
 
 fn example_window(path: String) {
-    // // create empty database
-    // let mut db = SparqlDatabase::new();
-
-    // // read file with turtle data
-    // let binding = read_to_string(path.clone()).expect("failed to read .nt file");
-    // let turtle_data = binding.as_str();
-
-    // // parse N-Triples data
-    // db.parse_ntriples_and_add(turtle_data);
-
-    // sparql query
-    let rsp_ql_query = r#"  PREFIX ex: <http://example.org/>
+    // SPARQL query
+    let query = r#"  PREFIX ex: <http://example.org/>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
@@ -75,27 +65,10 @@ WHERE {
     FILTER(?value > 25)
 }"#;
 
-    // let logical_plan = parse_sparql_to_logical_plan(rsp_ql_query, &mut db).expect("Parse went wrong");
-    // let logical_plan_clone = logical_plan.clone();
-    // let logical_plan_clone = match parse_sparql_to_logical_plan(rsp_ql_query, &mut db) {
-    //     Ok(plan) => Some(plan),
-    //     Err(err) => {
-    //         eprintln!(
-    //             "[Adaptor] Could not build logical plan from full RSP-QL query: {}",
-    //             err
-    //         );
-    //         eprintln!(
-    //             "[Adaptor] Continuing without adaptive replanning; engine query execution still runs."
-    //         );
-    //         None
-    //     }
-    // };
-
-    // Collect results via a shared container that the engine writes into.
+    // Collect results via a shared container that the engine writes into. (just like in rsp_engine_test.rs)
     let result_container = Arc::new(Mutex::new(Vec::new()));
     let result_container_clone = Arc::clone(&result_container);
     let function = Box::new(move |r: Vec<(String, String)>| {
-        // println!("Bindings: {:?}", r);
         result_container_clone.lock().unwrap().push(r);
     });
     let result_consumer = ResultConsumer {
@@ -104,86 +77,72 @@ WHERE {
     let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
 
     let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
-            .add_rsp_ql_query(rsp_ql_query)
+            .add_rsp_ql_query(query)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
             .set_operation_mode(OperationMode::SingleThread)
             .build()
             .expect("Failed to build RSP engine");
 
-    // View logical plan per window here
+    // View logical plan per window
     let window_info = engine.get_window_info();
     let window_plans: Vec<LogicalOperator> = window_info.iter().map(|w| {
         w.query.clone()
     }).collect();
+
+    // Select logical plan of the first (and only) window
     let logical_plan = window_plans.first().unwrap().clone();
 
+    // Variable to keep track of the stats of the previous window
+    let previous_stats = Arc::new(Mutex::new(ContainerStats::default()));
 
-    // Example runtime adaptor: inspect each fired window and optionally swap plan.
-    // This keeps it conservative: only swap a top-level ParallelJoin to HashJoin
-    // once the window gets "large enough".
-    engine.set_window_plan_adaptor(Arc::new(
-        move |window_iri, content: &ContentContainer<Triple>, ts, current_plan| {
+    // Runtime adaptor: inspect each fired window and optionally swap plan
+    engine.set_window_plan_adaptor(
+        Arc::new(
+        move |window_iri, content: &ContentContainer<Triple>, ts, _current_plan| {
+            
             let window_size = content.len();
             println!(
                 "[Adaptor] window={} ts={} tuples_in_window={}",
                 window_iri, ts, window_size
             );
 
-            // // Create temporary database
-            // let mut temp_db = SparqlDatabase::new();
-            // for triple in content.iter() {
-            //     temp_db.add_triple(triple.clone());
-            // }
-            // // Count amount of triples that got registered
-            // let stats = DatabaseStats::gather_stats_fast(&mut temp_db);
-
             // Get container stats
-            let stats = ContainerStats::gather_stats(content);  
-            // Take a quick look at the stats  
-            println!("Total: {}, Cardinalities: {}, {}, {}",
-                stats.get_total_triples(),
-                stats.get_total_subjects(),
-                stats.get_total_predicates(),
-                stats.get_total_objects()
-            );     
+            let current_stats = ContainerStats::gather_stats(content);
 
-            // Plan gets recalculated
-            // if let Some(logical_plan) = &logical_plan_clone {
-            //     let new_plan = join_reordering::naive_reordering(logical_plan.clone(), &mut temp_db); // does not work for query plan with windows
-            //     println!("[Adaptor] Recalculate plan for {}", window_iri);
-            //     println!("{:?}", new_plan);
-            //     return Some(new_plan);
-            // }
+            let mut previous_stats_guard = previous_stats.lock().unwrap();
+
+            // Take a quick look at the previous stats  
+            println!("Previous stats: Total: {}, Cardinalities: {}, {}, {}",
+                previous_stats_guard.get_total_triples(),
+                previous_stats_guard.get_total_subjects(),
+                previous_stats_guard.get_total_predicates(),
+                previous_stats_guard.get_total_objects()
+            );
+
+            // Take a quick look at the stats  
+            println!("Current stats: Total: {}, Cardinalities: {}, {}, {}",
+                current_stats.get_total_triples(),
+                current_stats.get_total_subjects(),
+                current_stats.get_total_predicates(),
+                current_stats.get_total_objects()
+            );
 
             // Calculate a potential new plan 
-            if ts % 2 == 0 { // only do this under a certain condition (TBD)
+            if true { // only do this under a certain condition (TBD)
                 let new_plan = join_reordering::pick_some_plan(logical_plan.clone());
                 println!("[Adaptor] Recalculate plan for {}", window_iri);
                 println!("{:?}", new_plan);
+                *previous_stats_guard = current_stats; // Update previous stats for next window
                 return Some(new_plan);
             }
             
             // Plan remains the same
             println!("[Adaptor] Plan remains the same {}", window_iri);
+            *previous_stats_guard = current_stats; // Update previous stats for next window
             return None;
         },
     ));
-
-    // // Print per window physical query plan
-    // let window_info = engine.get_window_info();
-    // let query_plan = engine.get_query_plan();
-    // println!("Per-window physical plans:");
-    // let plans_guard = query_plan.window_plans.read().unwrap();
-    // for (idx, window) in window_info.iter().enumerate() {
-    //     if let Some(plan) = plans_guard.get(idx) {
-    //         println!("  {} -> {:?}", window.window_iri, plan);
-    //     }
-    // }
-    // drop(plans_guard);
-
-    // small hack to make sure the encoder is aligned between parsing and query injection
-    // engine.parse_data("a a <http://www.w3.org/test/SuperType> .");
 
     // Add data to stream with increasing event time.
     // With RANGE PT1H and default ON_WINDOW_CLOSE, timestamps must advance
