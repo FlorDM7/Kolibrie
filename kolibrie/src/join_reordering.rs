@@ -1,17 +1,40 @@
+use crate::container_stats::ContainerStats;
+use crate::stream_estimator::StreamEstimator;
 use crate::streamertail_optimizer::*;
 use crate::sparql_database::SparqlDatabase;
 use std::collections::HashSet;
+
+/**
+ * Reordering based on a ContentContainer with a StreamEstimator
+ */
+pub fn recalculate_window_plan(logical_plan: LogicalOperator, container_stats: ContainerStats) -> PhysicalOperator {
+    let plans = generate_all_reorderings(&logical_plan);
+    let mut result = plans.get(0).unwrap().clone(); // initialize result variable
+    let estimator = StreamEstimator::new(container_stats);
+    let mut minimum_estimated_cost = i64::MAX;
+    println!("[Recalculate] {} query plans considered", plans.len());
+    for plan in plans {
+        let cost = estimator.estimate_cost(&plan).unwrap(); // Estimate cost
+        // dbg!(&plan);
+        // dbg!(cost);
+        if cost < minimum_estimated_cost {
+            result = plan;
+            minimum_estimated_cost = cost; // Minimalize cost
+        }
+    }
+    dbg!(minimum_estimated_cost);
+    logical_to_physical(result.clone())
+}
+
+// placeholder function
+pub fn pick_some_plan(logical_plan: LogicalOperator) -> PhysicalOperator {
+    logical_to_physical(logical_plan.clone())
+}
 
 /*
  Naive static join reordering
  Generate all possible join reoderings and pick the "best" one
  */
-
-pub fn pick_some_plan(logical_plan: LogicalOperator) -> PhysicalOperator {
-    let plans = generate_all_reorderings(&logical_plan);
-    let plan = plans.last().unwrap();
-    logical_to_physical(plan.clone())
-}
 
 pub fn naive_reordering(logical_plan: LogicalOperator, db: &mut SparqlDatabase) -> PhysicalOperator {
     let plans = generate_all_reorderings(&logical_plan);

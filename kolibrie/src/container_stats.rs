@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use shared::triple::Triple;
 use crate::rsp::s2r::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ContainerStats {
     pub total_triples: i64,
     pub predicate_cardinalities: HashMap<u32, i64>, // meaning u32 appears a number of i64 times in the container
@@ -79,6 +79,19 @@ impl ContainerStats {
     // Gets the cardinality for a predicate
     pub fn get_predicate_cardinality(&self, predicate: u32) -> i64 {
         self.predicate_cardinalities.get(&predicate).copied().unwrap_or(0)
+    }
+
+    // vibe
+    // Gets or computes join selectivity for a predicate.
+    // Follows the same heuristic as DatabaseStats:
+    // selectivity = predicate_cardinality / total_triples.
+    pub fn get_join_selectivity(&self, predicate: u32) -> f64 {
+        let cardinality = self.get_predicate_cardinality(predicate);
+        if self.total_triples > 0 {
+            (cardinality as f64) / (self.total_triples as f64)
+        } else {
+            0.1
+        }
     }
 
     // Gets the cardinality for an subject
@@ -256,5 +269,36 @@ mod tests {
         assert_eq!(diff_stats.get_object_cardinality(101), 0);
         assert_eq!(diff_stats.get_object_cardinality(102), 1);
         assert_eq!(diff_stats.get_object_cardinality(103), -1);
+    }
+
+    // vibe
+    #[test]
+    fn test_get_join_selectivity() {
+        let triples = vec![
+            Triple {
+                subject: 10,
+                predicate: 2,
+                object: 5,
+            },
+            Triple {
+                subject: 11,
+                predicate: 2,
+                object: 6,
+            },
+            Triple {
+                subject: 11,
+                predicate: 1,
+                object: 7,
+            },
+        ];
+
+        let container = ContentContainer::from_items(triples, 1);
+        let stats = ContainerStats::gather_stats(&container);
+
+        // predicate 2 appears 2 times over 3 triples
+        assert!((stats.get_join_selectivity(2) - (2.0 / 3.0)).abs() < 1e-9);
+
+        // unknown predicate has 0 cardinality
+        assert_eq!(stats.get_join_selectivity(999), 0.0);
     }
 }

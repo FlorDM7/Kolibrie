@@ -110,6 +110,7 @@ WHERE {
             // Get container stats
             let current_stats = ContainerStats::gather_stats(content);
 
+            // Load previous window stats to compare
             let mut previous_stats_guard = previous_stats.lock().unwrap();
 
             // Take a quick look at the previous stats  
@@ -130,7 +131,7 @@ WHERE {
 
             // Calculate a potential new plan 
             if true { // only do this under a certain condition (TBD)
-                let new_plan = join_reordering::pick_some_plan(logical_plan.clone());
+                let new_plan = join_reordering::recalculate_window_plan(logical_plan.clone(), current_stats.clone());
                 println!("[Adaptor] Recalculate plan for {}", window_iri);
                 println!("{:?}", new_plan);
                 *previous_stats_guard = current_stats; // Update previous stats for next window
@@ -163,7 +164,123 @@ WHERE {
     println!("RSP result batches: {}", results.len());
 }
 
+fn example_window2(path: String) {
+    // SPARQL query
+    let query = r#"
+    PREFIX ex: <http://example.org/>
+    REGISTER RSTREAM <output> AS
+    SELECT ?book ?author ?publisher
+    FROM NAMED WINDOW :window1 ON :stream [RANGE 100 STEP 100]
+    WHERE {
+        WINDOW :window1 {
+            ?book ex:writtenBy ?author .
+            ?book ex:publishedBy ?publisher .
+            ?author ex:nationality "Belgian" .
+        }
+    }
+    "#;
+
+    // Collect results via a shared container that the engine writes into. (just like in rsp_engine_test.rs)
+    let result_container = Arc::new(Mutex::new(Vec::new()));
+    let result_container_clone = Arc::clone(&result_container);
+    let function = Box::new(move |r: Vec<(String, String)>| {
+        result_container_clone.lock().unwrap().push(r);
+    });
+    let result_consumer = ResultConsumer {
+        function: Arc::new(function),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
+            .build()
+            .expect("Failed to build RSP engine");
+
+    // View logical plan per window
+    let window_info = engine.get_window_info();
+    let window_plans: Vec<LogicalOperator> = window_info.iter().map(|w| {
+        w.query.clone()
+    }).collect();
+
+    // Select logical plan of the first (and only) window
+    let logical_plan = window_plans.first().unwrap().clone();
+
+    // Variable to keep track of the stats of the previous window
+    let previous_stats = Arc::new(Mutex::new(ContainerStats::default()));
+
+    // Runtime adaptor: inspect each fired window and optionally swap plan
+    engine.set_window_plan_adaptor(
+        Arc::new(
+        move |window_iri, content: &ContentContainer<Triple>, ts, _current_plan| {
+            
+            let window_size = content.len();
+            println!(
+                "[Adaptor] window={} ts={} tuples_in_window={}",
+                window_iri, ts, window_size
+            );
+
+            // Get container stats
+            let current_stats = ContainerStats::gather_stats(content);
+
+            // Load previous window stats to compare
+            let mut previous_stats_guard = previous_stats.lock().unwrap();
+
+            // Take a quick look at the previous stats  
+            println!("Previous stats: Total: {}, Cardinalities: {}, {}, {}",
+                previous_stats_guard.get_total_triples(),
+                previous_stats_guard.get_total_subjects(),
+                previous_stats_guard.get_total_predicates(),
+                previous_stats_guard.get_total_objects()
+            );
+
+            // Take a quick look at the stats  
+            println!("Current stats: Total: {}, Cardinalities: {}, {}, {}",
+                current_stats.get_total_triples(),
+                current_stats.get_total_subjects(),
+                current_stats.get_total_predicates(),
+                current_stats.get_total_objects()
+            );
+
+            // Calculate a potential new plan 
+            if true { // only do this under a certain condition (TBD)
+                let new_plan = join_reordering::recalculate_window_plan(logical_plan.clone(), current_stats.clone());
+                println!("[Adaptor] Recalculate plan for {}", window_iri);
+                println!("{:?}", new_plan);
+                *previous_stats_guard = current_stats; // Update previous stats for next window
+                return Some(new_plan);
+            }
+            
+            // Plan remains the same
+            println!("[Adaptor] Plan remains the same {}", window_iri);
+            *previous_stats_guard = current_stats; // Update previous stats for next window
+            return None;
+        },
+    ));
+
+    // Add data to stream with increasing event time.
+    // With RANGE PT1H and default ON_WINDOW_CLOSE, timestamps must advance
+    // beyond the window close boundary to emit results.
+    let binding = read_to_string(path).expect("failed to read .nt file");
+    let data = binding.as_str();
+    let triples = engine.parse_data(&data);
+    println!("Amount of triples: {}", triples.len());
+    for (i, triple) in triples.into_iter().enumerate() {
+        let ts = i;
+        engine.add_to_stream("stream", triple, ts);
+    }
+
+    engine.stop();
+
+    let results = result_container.lock().unwrap();
+
+    println!("RSP result batches: {}", results.len());
+}
+
 fn main() {
+    // example_window2("datasets/books.nt".to_string());
     example_window("datasets/dataset_windowed_test.nt".to_string());
     // example_static("datasets/dataset1_complete.nt".to_string());
     // example_static("datasets/dataset2_high_sensors.nt".to_string());

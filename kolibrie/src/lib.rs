@@ -28,3 +28,4 @@ pub mod query_engine;
 // Query plan optimization
 pub mod join_reordering;
 pub mod container_stats;
+pub mod stream_estimator;
