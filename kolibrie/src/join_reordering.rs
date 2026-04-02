@@ -9,26 +9,21 @@ use std::collections::HashSet;
  */
 pub fn recalculate_window_plan(logical_plan: LogicalOperator, container_stats: ContainerStats) -> PhysicalOperator {
     let plans = generate_all_reorderings(&logical_plan);
-    let mut result = plans.get(0).unwrap().clone(); // initialize result variable
+    let mut result = logical_to_physical(plans.get(0).unwrap().clone()); // initialize result variable
     let estimator = StreamEstimator::new(container_stats);
     let mut minimum_estimated_cost = i64::MAX;
     println!("[Recalculate] {} query plans considered", plans.len());
     for plan in plans {
+        let plan = logical_to_physical(plan);
         let cost = estimator.estimate_cost(&plan).unwrap(); // Estimate cost
-        // dbg!(&plan);
-        // dbg!(cost);
+        println!("{}", cost);
         if cost < minimum_estimated_cost {
             result = plan;
             minimum_estimated_cost = cost; // Minimalize cost
         }
     }
     dbg!(minimum_estimated_cost);
-    logical_to_physical(result.clone())
-}
-
-// placeholder function
-pub fn pick_some_plan(logical_plan: LogicalOperator) -> PhysicalOperator {
-    logical_to_physical(logical_plan.clone())
+    result.clone()
 }
 
 /*
@@ -67,11 +62,11 @@ fn logical_to_physical(logical_plan: LogicalOperator) -> PhysicalOperator {
         LogicalOperator::Selection { predicate, condition } =>
             PhysicalOperator::Filter { input: Box::new(logical_to_physical(*predicate)), condition },
         LogicalOperator::Join { left, right } =>
-            PhysicalOperator::NestedLoopJoin { left: Box::new(logical_to_physical(*left)), right: Box::new(logical_to_physical(*right))},
+            PhysicalOperator::HashJoin { left: Box::new(logical_to_physical(*left)), right: Box::new(logical_to_physical(*right))},
         LogicalOperator::Subquery { inner, projected_vars } =>
             PhysicalOperator::Subquery { inner: Box::new(logical_to_physical(*inner)), projected_vars },
         _ => {
-            panic!("I don't know about the other operators okay");
+            panic!("I don't know about the other operators!");
         }
     }
 }
@@ -305,6 +300,9 @@ fn collect_filter_vars_from_expr(expr: &shared::query::FilterExpression, vars: &
             collect_filter_vars_from_expr(inner, vars);
         }
         shared::query::FilterExpression::ArithmeticExpr(_) => {}
+        
+        // Ohters not implemented
+        _ => ()
     }
 }
 
