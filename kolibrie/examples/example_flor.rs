@@ -1,10 +1,19 @@
 extern crate kolibrie;
-use kolibrie::{container_stats::ContainerStats, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, LogicalOperator, PhysicalOperator}};
+use kolibrie::{container_stats::ContainerStats, query_builder, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, streamertail_optimizer::{LogicalOperator, PhysicalOperator}};
 use shared::triple::Triple;
 use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
+use serde::Deserialize;
 
-fn example_window(path: String) {
+#[derive(Debug, Deserialize)]
+struct StreamEvent {
+    stream: String,
+    timestamp: usize,
+    ntriples: String,
+}
+
+#[allow(dead_code)]
+fn example_window(path: String, replan_trigger: ReplanTrigger) {
     // SPARQL query
     let query = r#"  PREFIX ex: <http://example.org/>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -22,10 +31,10 @@ WHERE {
     }
 }"#;
 
-    set_up_engine(path, query);   
+    set_up_engine(path, query, replan_trigger);
 }
 
-fn example_window2(path: String) {
+fn example_window2(path: String, replan_trigger: ReplanTrigger) {
     let query = r#"
     PREFIX ex: <http://example.org/>
     REGISTER RSTREAM <output> AS
@@ -40,7 +49,7 @@ fn example_window2(path: String) {
     }
     "#;
 
-    set_up_engine(path, query);    
+    set_up_engine(path, query, replan_trigger);
 }
 
 pub fn physical_plan_to_string(plan: &PhysicalOperator) -> String {
@@ -51,7 +60,7 @@ pub fn are_physical_plans_identical(left: &PhysicalOperator, right: &PhysicalOpe
     physical_plan_to_string(left) == physical_plan_to_string(right)
 }
 
-pub fn set_up_engine(path: String, query: &str) {
+pub fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
     // Collect results via a shared container that the engine writes into. (just like in rsp_engine_test.rs)
     let result_container = Arc::new(Mutex::new(Vec::new()));
     let result_container_clone = Arc::clone(&result_container);
@@ -61,7 +70,7 @@ pub fn set_up_engine(path: String, query: &str) {
     let result_consumer = ResultConsumer {
         function: Arc::new(function),
     };
-    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Standard));
 
     let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
             .add_rsp_ql_query(query)
@@ -79,6 +88,7 @@ pub fn set_up_engine(path: String, query: &str) {
 
     // Select logical plan of the first (and only) window
     let logical_plan = window_plans.first().unwrap().clone();
+    let replan_metric = make_replan_fn(replan_trigger);
 
     // Variable to keep track of the stats of the previous window
     let previous_stats = Arc::new(Mutex::new(ContainerStats::default()));
@@ -101,14 +111,14 @@ pub fn set_up_engine(path: String, query: &str) {
             // END gather stats
             let stats_time = window_start.elapsed().as_secs_f64() * 1000.0;
 
-
-            // Take a quick look at the previous stats  
-            println!("Previous stats: Total: {}, Cardinalities: {}, {}, {}",
-                previous_stats.get_total_triples(),
-                previous_stats.get_total_subjects(),
-                previous_stats.get_total_predicates(),
-                previous_stats.get_total_objects()
-            );
+            let window_size = content.len();
+            // // Take a quick look at the previous stats  
+            // println!("Previous stats: Total: {}, Cardinalities: {}, {}, {}",
+            //     previous_stats.get_total_triples(),
+            //     previous_stats.get_total_subjects(),
+            //     previous_stats.get_total_predicates(),
+            //     previous_stats.get_total_objects()
+            // );
 
             // Take a quick look at the stats  
             println!("Current stats: Total: {}, Cardinalities: {}, {}, {}",
@@ -117,19 +127,21 @@ pub fn set_up_engine(path: String, query: &str) {
                 current_stats.get_total_predicates(),
                 current_stats.get_total_objects()
             );
-
              
-            let window_size = content.len();
-            println!(
-                "[Adaptor] window={} ts={} tuples_in_window={}",
-                window_iri, ts, window_size
-            );
+            // println!(
+            //     "[Adaptor] window={} ts={} tuples_in_window={}",
+            //     window_iri, ts, window_size
+            // );
+
+            // dbg!(&_current_plan);
 
             // START new plan calculation
             let start_calculation = Instant::now();
-            let create_new_plan = current_stats.should_replan_size_change(&previous_stats);
+
+            // Decide whether to replan based on the selected trigger.
+            let replan = replan_metric(&current_stats, &previous_stats);
             // Calculate a potential new plan 
-            if create_new_plan {
+            if replan {
                 let new_plan = join_reordering::recalculate_window_plan(logical_plan.clone(), current_stats.clone());
                 
                 println!("[Adaptor] Recalculate plan for {}", window_iri);
@@ -158,22 +170,8 @@ pub fn set_up_engine(path: String, query: &str) {
         },
     ));
 
-    // Add data to stream with increasing event time.
-    let binding = read_to_string(path).expect("failed to read .nt file");
-    let data = binding.as_str();
-    let triples = engine.parse_data(&data);
-    let amount_of_triples = triples.len();
-    println!("Amount of triples: {}", &amount_of_triples);
-
-    for (i, triple) in triples.into_iter().enumerate() {
-        if 160 < i && i < 300 { // window will have different size
-            let ts = i/4;
-            engine.add_to_stream("stream", triple, ts);
-            continue;
-        }
-        let ts = i/2;
-        engine.add_to_stream("stream", triple, ts);
-    }
+    let amount_of_triples = stream_dataset(&mut engine, &path);
+    println!("Amount of triples: {}", amount_of_triples);
 
     engine.stop();
 
@@ -185,6 +183,9 @@ fn print_engine_results(result_container: Arc<Mutex<Vec<Vec<(String, String)>>>>
 
     println!("RSP result batches: {}", results.len());
     for (batch_idx, batch) in results.iter().enumerate() {
+        if batch_idx > 10 {
+            break;
+        }
         println!("Batch {} ({} bindings)", batch_idx + 1, batch.len());
         for (binding_idx, binding) in batch.iter().enumerate() {
             println!("  [{}] {:?}", binding_idx + 1, binding);
@@ -192,7 +193,158 @@ fn print_engine_results(result_container: Arc<Mutex<Vec<Vec<(String, String)>>>>
     }
 }
 
+fn stream_dataset_as_subject_groups(
+    engine: &mut RSPEngine<Triple, Vec<(String, String)>>,
+    path: &str,
+    timestamp_stride: usize,
+) -> usize {
+    let binding = read_to_string(path).expect("failed to read .nt file");
+    let mut timestamp = 0usize;
+    let mut current_subject: Option<String> = None;
+    let mut amount_of_triples = 0usize;
+
+    for line in binding.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let subject = match line.split_whitespace().next() {
+            Some(subject) => subject.to_string(),
+            None => continue,
+        };
+
+        if current_subject.as_deref() != Some(subject.as_str()) {
+            if current_subject.is_some() {
+                timestamp += timestamp_stride;
+            }
+            current_subject = Some(subject);
+        }
+
+        let parsed_triples = engine.parse_data(line);
+        if parsed_triples.is_empty() {
+            continue;
+        }
+
+        for triple in parsed_triples {
+            engine.add_to_stream("stream", triple, timestamp);
+            amount_of_triples += 1;
+        }
+    }
+
+    amount_of_triples
+}
+
+fn stream_dataset(engine: &mut RSPEngine<Triple, Vec<(String, String)>>, path: &str) -> usize {
+    match std::path::Path::new(path).extension().and_then(|ext| ext.to_str()) {
+        Some("json") | Some("jsonl") | Some("ndjson") => {
+            stream_timestamped_events(engine, path)
+        }
+        _ => stream_dataset_as_subject_groups(engine, path, 1),
+    }
+}
+
+fn stream_timestamped_events(
+    engine: &mut RSPEngine<Triple, Vec<(String, String)>>,
+    path: &str,
+) -> usize {
+    let binding = read_to_string(path).expect("failed to read timestamped event file");
+    let mut events = load_stream_events(&binding);
+    let mut amount_of_triples = 0usize;
+
+    events.sort_by_key(|event| event.timestamp);
+
+    for event in events {
+        if event.stream.trim().is_empty() || event.ntriples.trim().is_empty() {
+            continue;
+        }
+
+        let parsed_triples = engine.parse_data(&event.ntriples);
+        for triple in parsed_triples {
+            engine.add_to_stream(&event.stream, triple, event.timestamp);
+            amount_of_triples += 1;
+        }
+    }
+
+    amount_of_triples
+}
+
+fn load_stream_events(content: &str) -> Vec<StreamEvent> {
+    let trimmed = content.trim_start();
+
+    if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed).expect("failed to parse JSON event array")
+    } else {
+        content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| serde_json::from_str::<StreamEvent>(line).expect("failed to parse JSON event line"))
+            .collect()
+    }
+}
+
+// Use an Arc-wrapped function to choose our replanning trigger
+type ReplanFn = Arc<dyn Fn(&ContainerStats, &ContainerStats) -> bool + Send + Sync>;
+
+fn make_replan_fn(trigger: ReplanTrigger) -> ReplanFn {
+    match trigger {
+        ReplanTrigger::Static => Arc::new(|_, _| false),
+        ReplanTrigger::Always => Arc::new(|_, _| true),
+        ReplanTrigger::OnSizeChange { threshold } => {
+            Arc::new(move |current, previous| current.size_change_ratio(previous) > threshold)
+        }
+        ReplanTrigger::OnDistributionChange { threshold } => Arc::new(move |current, previous| {
+            current.subject_distribution_distance(previous) > threshold
+        }),
+        ReplanTrigger::OnRankingChange { threshold } => {
+            Arc::new(move |current, previous| current.rank_change_ratio(previous) > threshold)
+        }
+        ReplanTrigger::Hybrid {
+            size_threshold,
+            distribution_threshold,
+            ranking_threshold,
+        } => Arc::new(move |current, previous| {
+            current.size_change_ratio(previous) > size_threshold
+                || current.predicate_distribution_distance(previous) > distribution_threshold
+                || current.rank_change_ratio(previous) > ranking_threshold
+        }),
+    }
+}
+
+enum ReplanTrigger {
+    Static,
+    Always,
+    OnSizeChange { threshold: f64 },
+    OnDistributionChange { threshold: f64, },
+    OnRankingChange { threshold: f64 },
+    Hybrid { size_threshold: f64, distribution_threshold: f64, ranking_threshold: f64 },
+}
+
+fn example_window3(path: String, replan_trigger: ReplanTrigger) {
+    let query = r#"
+    PREFIX ex: <http://example.org/stream/>
+
+    REGISTER RSTREAM <output> AS
+    SELECT ?reading ?sensor ?zone ?value
+    FROM NAMED WINDOW :window1 ON :stream [RANGE 100 STEP 100]
+    WHERE {
+    WINDOW :window1 {
+        ?reading <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ex:Reading .
+        ?reading ex:fromSensor ?sensor .
+        ?sensor ex:locatedIn ?zone .
+        ?reading ex:status "ALERT" .
+        ?reading ex:value ?value .
+    }
+    }"#;
+
+    set_up_engine(path, query, replan_trigger);
+}
+
 fn main() {
     // example_window("datasets/dataset_windowed_test.nt".to_string());
-    example_window2("datasets/books.nt".to_string());
+    // example_window2("datasets/books.events.ndjson".to_string(), ReplanTrigger::Always);
+    // example_window3("datasets/optimizer_case_static.events.ndjson".to_string(), ReplanTrigger::Static);
+    example_window3("datasets/optimizer_case_volatile.events.ndjson".to_string(), ReplanTrigger::Always);
+    // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.05 });
 }
