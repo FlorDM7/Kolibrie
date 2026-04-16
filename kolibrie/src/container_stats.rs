@@ -149,14 +149,17 @@ impl ContainerStats {
     // If the size of the window changes with a "big" margin, return true
     // advantage: simple, quick
     // disadvantage: change also needed when window is of equal size
-    pub fn should_replan_size_change(&self, previous_stats: &ContainerStats) -> bool {
+    pub fn size_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
         let current_amount = self.total_triples;
         let previous_amount = previous_stats.get_total_triples();
         let size_change = current_amount - previous_amount;
         let mut size_change = size_change.abs() as f64;
         size_change = size_change / (max(previous_amount, 1) as f64);
-        dbg!(size_change);
-        size_change > 0.2
+        size_change
+    }
+
+    pub fn should_replan_size_change(&self, previous_stats: &ContainerStats) -> bool {
+        self.size_change_ratio(previous_stats) > 0.2
     }
 
     // OPTION 2: DIFFERENCE IN PREDICATE COUNT DISTRIBUTION
@@ -183,21 +186,21 @@ impl ContainerStats {
 
     // Computes total variation distance between predicate distributions.
     // L1 Total Variation
-    fn predicate_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn predicate_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
         Self::distribution_distance_from_maps(
             &self.predicate_cardinalities,
             &previous_stats.predicate_cardinalities,
         )
     }
 
-    fn subject_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn subject_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
         Self::distribution_distance_from_maps(
             &self.subject_cardinalities,
             &previous_stats.subject_cardinalities,
         )
     }
 
-    fn object_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn object_distribution_distance(&self, previous_stats: &ContainerStats) -> f64 {
         Self::distribution_distance_from_maps(
             &self.object_cardinalities,
             &previous_stats.object_cardinalities,
@@ -245,7 +248,7 @@ impl ContainerStats {
     // Pairwise rank-change ratio across predicate selectivities.
     // A "pair" is any 2 predicates (pi, pj). A pair is "flipped"
     // when their relative order changes between windows.
-    fn rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
         Self::rank_change_ratio_from_maps(
             &self.predicate_cardinalities,
             &previous_stats.predicate_cardinalities,
