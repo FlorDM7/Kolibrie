@@ -12,17 +12,17 @@ pub fn recalculate_window_plan(logical_plan: LogicalOperator, container_stats: C
     let mut result = logical_to_physical(plans.get(0).unwrap().clone()); // initialize result variable
     let estimator = StreamEstimator::new(container_stats);
     let mut minimum_estimated_cost = i64::MAX;
-    println!("[Recalculate] {} query plans considered", plans.len());
+    // println!("[Recalculate] {} query plans considered", plans.len());
     for plan in plans {
         let plan = logical_to_physical(plan);
         let cost = estimator.estimate_cost(&plan).unwrap(); // Estimate cost
-        println!("{}", cost);
+        // println!("{}", cost);
         if cost < minimum_estimated_cost {
             result = plan;
             minimum_estimated_cost = cost; // Minimalize cost
         }
     }
-    dbg!(minimum_estimated_cost);
+    // dbg!(minimum_estimated_cost);
     result.clone()
 }
 

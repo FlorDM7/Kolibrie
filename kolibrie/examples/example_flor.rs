@@ -1,5 +1,5 @@
 extern crate kolibrie;
-use kolibrie::{container_stats::ContainerStats, execute_query::parse_sparql_to_logical_plan, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, LogicalOperator, PhysicalOperator}};
+use kolibrie::{container_stats::ContainerStats, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, sparql_database::*, streamertail_optimizer::{DatabaseStats, LogicalOperator, PhysicalOperator}};
 use shared::triple::Triple;
 use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
@@ -87,20 +87,20 @@ pub fn set_up_engine(path: String, query: &str) {
     engine.set_window_plan_adaptor(
         Arc::new(
         move |window_iri, content: &ContentContainer<Triple>, ts, _current_plan| {
-            
+
+            // START: Gather stats
             let window_start = Instant::now();
-            let window_size = content.len();
-            println!(
-                "[Adaptor] window={} ts={} tuples_in_window={}",
-                window_iri, ts, window_size
-            );
 
             // Get container stats
             let current_stats = ContainerStats::gather_stats(content);
 
             // Load previous window stats to compare
             let mut previous_stats_guard = previous_stats.lock().unwrap();
-            let mut previous_stats = previous_stats_guard.clone();
+            let previous_stats = previous_stats_guard.clone();
+            
+            // END gather stats
+            let stats_time = window_start.elapsed().as_secs_f64() * 1000.0;
+
 
             // Take a quick look at the previous stats  
             println!("Previous stats: Total: {}, Cardinalities: {}, {}, {}",
@@ -118,18 +118,18 @@ pub fn set_up_engine(path: String, query: &str) {
                 current_stats.get_total_objects()
             );
 
-            // // Compare stats
-            // let diff = previous_stats.compare(current_stats.clone());
-            // println!("Diff stats: Total: {}, Cardinalities: {}, {}, {}",
-            //     diff.get_total_triples(),
-            //     diff.get_total_subjects(),
-            //     diff.get_total_predicates(),
-            //     diff.get_total_objects()
-            // );
+             
+            let window_size = content.len();
+            println!(
+                "[Adaptor] window={} ts={} tuples_in_window={}",
+                window_iri, ts, window_size
+            );
 
+            // START new plan calculation
+            let start_calculation = Instant::now();
+            let create_new_plan = current_stats.should_replan_size_change(&previous_stats);
             // Calculate a potential new plan 
-            // current_stats.should_replan_object_distribution(&previous_stats)
-            if true {
+            if create_new_plan {
                 let new_plan = join_reordering::recalculate_window_plan(logical_plan.clone(), current_stats.clone());
                 
                 println!("[Adaptor] Recalculate plan for {}", window_iri);
@@ -138,12 +138,12 @@ pub fn set_up_engine(path: String, query: &str) {
                 } else {
                     println!("[Adaptor] New plan was chosen");
                 }
-                dbg!(&new_plan);
+                // dbg!(&new_plan);
                 *previous_stats_guard = current_stats; // Update previous stats for next window
 
-                let window_latency = window_start.elapsed().as_secs_f64() * 1000.0;
-                println!("[Timing] window={} latency={}ms tuples={}", 
-                    window_iri, window_latency, window_size);
+                let optimize_plan_time = start_calculation.elapsed().as_secs_f64() * 1000.0;
+                println!("[Timing] window={} latency={:.3}ms stats_time={:.3}ms tuples={}", 
+                    window_iri, optimize_plan_time, stats_time, window_size);
                 return Some(new_plan);
             }
             
@@ -151,23 +151,20 @@ pub fn set_up_engine(path: String, query: &str) {
             println!("[Adaptor] Plan remains the same {}", window_iri);
             *previous_stats_guard = current_stats; // Update previous stats for next window
             
-            let window_latency = window_start.elapsed().as_secs_f64() * 1000.0;
-            println!("[Timing] window={} latency={}ms tuples={}", 
-                window_iri, window_latency, window_size);
+            let optimize_plan_time = start_calculation.elapsed().as_secs_f64() * 1000.0;
+            println!("[Timing] window={} latency={:.3}ms stats_time={:.3}ms tuples={}", 
+                window_iri, optimize_plan_time, stats_time, window_size);
             return None;
         },
     ));
 
     // Add data to stream with increasing event time.
-    // With RANGE PT1H and default ON_WINDOW_CLOSE, timestamps must advance
-    // beyond the window close boundary to emit results.
     let binding = read_to_string(path).expect("failed to read .nt file");
     let data = binding.as_str();
     let triples = engine.parse_data(&data);
     let amount_of_triples = triples.len();
     println!("Amount of triples: {}", &amount_of_triples);
 
-    let start = Instant::now();
     for (i, triple) in triples.into_iter().enumerate() {
         if 160 < i && i < 300 { // window will have different size
             let ts = i/4;
@@ -179,10 +176,6 @@ pub fn set_up_engine(path: String, query: &str) {
     }
 
     engine.stop();
-
-    let elapsed_secs = start.elapsed().as_secs_f64();
-    let throughput = amount_of_triples as f64 / elapsed_secs;
-    println!("Throughput: {:.2} tuples/sec", throughput);
 
     print_engine_results(result_container);
 }

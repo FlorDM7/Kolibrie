@@ -135,8 +135,18 @@ macro_rules! create_window_processor {
             // Run forward-chaining inference to materialise derived facts
             store.materialize();
 
+            // Measure query execution time
+            let query_start = Instant::now();
+
             let results = store.execute_query(&query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
+
+            // Query execution ends here, print elapsed time
+            let query_execution_time = query_start.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "[WindowQueryTime] window={} ts={} query_execution_time={:.3} ms results={}",
+                $window_iri, ts, query_execution_time, results.len()
+            );
 
             // Release lock early to reduce contention
             drop(store);
