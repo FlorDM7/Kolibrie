@@ -339,6 +339,93 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     // Convert the final BTreeMap results into Vec<Vec<String>>
     format_results(final_results, &selected_variables)
 }
+// // vibe
+// // Parse a sparql query to a logical plan
+// pub fn parse_sparql_to_logical_plan(
+//     sparql: &str,
+//     database: &mut SparqlDatabase,
+// ) -> Result<LogicalOperator, String> {
+//     database.register_prefixes_from_query(sparql);
+//     let sparql = normalize_query(sparql);
+
+//     let parse_result = parse_sparql_query(sparql);
+
+//     match parse_result {
+//         Ok((
+//             _,
+//             (
+//                 insert_clause,
+//                 mut variables,
+//                 patterns,
+//                 filters,
+//                 _group_vars,
+//                 parsed_prefixes,
+//                 values_clause,
+//                 binds,
+//                 subqueries,
+//                 _limit,
+//                 _,
+//                 _order_conditions,
+//             ),
+//         )) => {
+//             if insert_clause.is_some() {
+//                 return Err("INSERT queries are not supported for logical-plan construction".to_string());
+//             }
+
+//             let mut prefixes = parsed_prefixes;
+//             database.share_prefixes_with(&mut prefixes);
+
+//             if variables == vec![("*", "*", None)] {
+//                 let mut all_vars = BTreeSet::new();
+//                 for (subject_var, predicate_var, object_var) in &patterns {
+//                     all_vars.insert(*subject_var);
+//                     all_vars.insert(*predicate_var);
+//                     all_vars.insert(*object_var);
+//                 }
+//                 variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
+//             }
+
+//             let mut selected_variables: Vec<(String, String)> = Vec::new();
+//             let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
+//             process_variables(&mut selected_variables, &mut aggregation_vars, variables);
+
+//             let resolved_patterns: Vec<(&str, &str, &str)> = patterns
+//                 .iter()
+//                 .map(|(subject_var, predicate, object_var)| {
+//                     let (resolved_subject, resolved_predicate, resolved_object) =
+//                         resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
+
+//                     let subject_static: &'static str = Box::leak(resolved_subject.into_boxed_str());
+//                     let predicate_static: &'static str = Box::leak(resolved_predicate.into_boxed_str());
+//                     let object_static: &'static str = Box::leak(resolved_object.into_boxed_str());
+
+//                     (subject_static, predicate_static, object_static)
+//                 })
+//                 .collect();
+
+//             let mut logical_plan = build_logical_plan(
+//                 selected_variables
+//                     .iter()
+//                     .map(|(t, v)| (t.as_str(), v.as_str()))
+//                     .collect(),
+//                 resolved_patterns,
+//                 filters,
+//                 &prefixes,
+//                 database,
+//                 &binds,
+//                 values_clause.as_ref(),
+//             );
+
+//             for subquery in &subqueries {
+//                 let subquery_plan = build_logical_plan_from_subquery(subquery, &prefixes, database);
+//                 logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
+//             }
+
+//             Ok(logical_plan)
+//         }
+//         Err(err) => Err(format_parse_error(sparql, err)),
+//     }
+// }
 
 pub fn execute_query_rayon_parallel2_volcano(
     sparql: &str,
