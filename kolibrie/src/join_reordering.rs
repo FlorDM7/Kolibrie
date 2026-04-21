@@ -7,12 +7,30 @@ use std::collections::HashSet;
 /**
  * Reordering based on a ContentContainer with a StreamEstimator
  */
-pub fn recalculate_window_plan(logical_plan: LogicalOperator, container_stats: ContainerStats) -> PhysicalOperator {
+pub fn recalculate_window_plan(logical_plan: PhysicalOperator, container_stats: ContainerStats) -> PhysicalOperator {
+    let plans = generate_all_neighbouring_plans(&logical_plan, &container_stats);
+    let mut result = plans.get(0).unwrap().clone(); // initialize result variable
+    let estimator = StreamEstimator::new(container_stats);
+    let mut minimum_estimated_cost = i64::MAX;
+    // println!("[Recalculate] {} query plans considered", plans.len());
+    for plan in plans {
+        let cost = estimator.estimate_cost(&plan).unwrap(); // Estimate cost
+        // println!("{}", cost);
+        if cost < minimum_estimated_cost {
+            result = plan;
+            minimum_estimated_cost = cost; // Minimalize cost
+        }
+    }
+    // dbg!(minimum_estimated_cost);
+    result.clone()
+}
+
+pub fn calculate_initial_window_plan(logical_plan: LogicalOperator, container_stats: ContainerStats) -> PhysicalOperator {
     let plans = generate_all_reorderings(&logical_plan);
     let mut result = logical_to_physical(plans.get(0).unwrap().clone()); // initialize result variable
     let estimator = StreamEstimator::new(container_stats);
     let mut minimum_estimated_cost = i64::MAX;
-    // println!("[Recalculate] {} query plans considered", plans.len());
+    // println!("[Initial] {} query plans considered", plans.len());
     for plan in plans {
         let plan = logical_to_physical(plan);
         let cost = estimator.estimate_cost(&plan).unwrap(); // Estimate cost
@@ -22,7 +40,6 @@ pub fn recalculate_window_plan(logical_plan: LogicalOperator, container_stats: C
             minimum_estimated_cost = cost; // Minimalize cost
         }
     }
-    // dbg!(minimum_estimated_cost);
     result.clone()
 }
 
@@ -41,7 +58,7 @@ pub fn pick_best_one(plans: Vec<LogicalOperator>, db: &mut SparqlDatabase) -> Ph
     let binding = &DatabaseStats::gather_stats_fast(db);
     let estimator = CostEstimator::new(binding); // Use cost estimator from volcano (make stream estimator)
     let mut minimum_estimated_cost = u64::MAX;
-    println!("{} query plans considered", plans.len());
+    // println!("{} query plans considered", plans.len());
     for plan in plans {
         let physical_plan = logical_to_physical(plan); // Turn into fysical operators 
         let cost = estimator.estimate_cost(&physical_plan); // Estimate cost
@@ -84,6 +101,389 @@ pub fn generate_all_reorderings(logical_plan: &LogicalOperator) -> Vec<LogicalOp
         .map(|plan| apply_top_level_ops(plan, &top_ops))
         .collect()
 }
+
+/*
+GENERATE NEIGHBOURING PLANS
+With GenAI
+ */
+// Return a small neighborhood of plans by swapping one or two joins in the existing tree.
+pub fn generate_all_neighbouring_plans(logical_plan: &PhysicalOperator, container_stats: &ContainerStats) -> Vec<PhysicalOperator> {
+    let (core_plan, top_ops) = strip_top_level_physical_ops(logical_plan.clone());
+
+    let mut candidates: Vec<PhysicalOperator> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut add_candidate = |candidate: PhysicalOperator| {
+        let key = format!("{:?}", candidate);
+        if seen.insert(key) {
+            candidates.push(candidate);
+        }
+    };
+
+    // Add the original plan
+    add_candidate(core_plan.clone());
+
+    // Generate tree-restructured alternatives with stats-guided scan ordering.
+    let restructured = restructure_plan_tree(&core_plan, container_stats);
+    for plan in restructured {
+        add_candidate(plan);
+    }
+
+    // // Generate 1-swap neighbors
+    // for path in &join_paths {
+    //     if let Some(swapped) = swap_join_children_at_path_physical(&core_plan, path) {
+    //         add_candidate(swapped);
+    //     }
+    // }
+
+    // // Generate 2-swap neighbors
+    // for i in 0..join_paths.len() {
+    //     for j in (i + 1)..join_paths.len() {
+    //         let mut candidate = core_plan.clone();
+    //         if let Some(swapped_once) = swap_join_children_at_path_physical(&candidate, &join_paths[i]) {
+    //             candidate = swapped_once;
+    //         } else {
+    //             continue;
+    //         }
+
+    //         if let Some(swapped_twice) = swap_join_children_at_path_physical(&candidate, &join_paths[j]) {
+    //             add_candidate(swapped_twice);
+    //         }
+    //     }
+    // }
+
+    // List of unique neighboring plans
+    candidates
+        .into_iter()
+        .map(|plan| apply_top_level_physical_ops(plan, &top_ops))
+        .collect()
+}
+
+// Collect all paths for where there is a join that we can swap
+fn collect_join_paths_physical(plan: &PhysicalOperator, current_path: &mut Vec<usize>, paths: &mut Vec<Vec<usize>>) {
+    match plan {
+        PhysicalOperator::HashJoin { left, right } => {
+            paths.push(current_path.clone());
+
+            current_path.push(0);
+            collect_join_paths_physical(left, current_path, paths);
+            current_path.pop();
+
+            current_path.push(1);
+            collect_join_paths_physical(right, current_path, paths);
+            current_path.pop();
+        }
+        PhysicalOperator::Filter { input, .. } => {
+            collect_join_paths_physical(input, current_path, paths);
+        }
+        PhysicalOperator::Projection { input, .. } => {
+            collect_join_paths_physical(input, current_path, paths);
+        }
+        PhysicalOperator::Subquery { inner, .. } => {
+            collect_join_paths_physical(inner, current_path, paths);
+        }
+        _ => {}
+    }
+}
+
+// Swap the children of a HashJoin at an given path
+// The path contains zeros to go left, one to go right in the tree
+fn swap_join_children_at_path_physical(plan: &PhysicalOperator, path: &[usize]) -> Option<PhysicalOperator> {
+    // Base case: we arrived at the join we wan to swap
+    if path.is_empty() {
+        return match plan {
+            PhysicalOperator::HashJoin { left, right } => Some(PhysicalOperator::HashJoin {
+                left: right.clone(),
+                right: left.clone(),
+            }),
+            _ => None,
+        };
+    }
+
+    // Recursive case
+    match plan {
+        PhysicalOperator::HashJoin { left, right } => {
+            // We go into the left part of the join
+            if path[0] == 0 {
+                swap_join_children_at_path_physical(left, &path[1..]).map(|new_left| PhysicalOperator::HashJoin {
+                    left: Box::new(new_left),
+                    right: right.clone(),
+                })
+            // We go into the right part of the join
+            } else if path[0] == 1 {
+                swap_join_children_at_path_physical(right, &path[1..]).map(|new_right| PhysicalOperator::HashJoin {
+                    left: left.clone(),
+                    right: Box::new(new_right),
+                })
+            } else {
+                None
+            }
+        }
+        PhysicalOperator::Filter { input, condition } => {
+            swap_join_children_at_path_physical(input, path).map(|new_input| PhysicalOperator::Filter {
+                input: Box::new(new_input),
+                condition: condition.clone(),
+            })
+        }
+        PhysicalOperator::Projection { input, variables } => {
+            swap_join_children_at_path_physical(input, path).map(|new_input| PhysicalOperator::Projection {
+                input: Box::new(new_input),
+                variables: variables.clone(),
+            })
+        }
+        PhysicalOperator::Subquery { inner, projected_vars } => {
+            swap_join_children_at_path_physical(inner, path).map(|new_inner| PhysicalOperator::Subquery {
+                inner: Box::new(new_inner),
+                projected_vars: projected_vars.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/**
+ * Generate alternative tree structures by reordering and restructuring leaf scans
+ * In this case: left deep tree, right deep tree, balanced tree, revered tree
+ */
+
+// Extract all leaf table scans from a physical operator tree
+// Returns a vector of TableScan operators in order encountered
+fn extract_leaf_scans_physical(plan: &PhysicalOperator) -> Vec<PhysicalOperator> {
+    let mut scans = Vec::new();
+    extract_leaf_scans_physical_helper(plan, &mut scans);
+    scans
+}
+
+fn extract_leaf_scans_physical_helper(plan: &PhysicalOperator, scans: &mut Vec<PhysicalOperator>) {
+    match plan {
+        PhysicalOperator::HashJoin { left, right } => {
+            extract_leaf_scans_physical_helper(left, scans);
+            extract_leaf_scans_physical_helper(right, scans);
+        }
+        PhysicalOperator::Filter { input, .. } => {
+            extract_leaf_scans_physical_helper(input, scans);
+        }
+        PhysicalOperator::Projection { input, .. } => {
+            extract_leaf_scans_physical_helper(input, scans);
+        }
+        PhysicalOperator::TableScan { pattern } => {
+            scans.push(PhysicalOperator::TableScan { pattern: pattern.clone() });
+        }
+        _ => {
+            // For other leaf types, just include them as-is
+            scans.push(plan.clone());
+        }
+    }
+}
+
+// Build a left-deep join tree: ((A join B) join C) join D
+// Each scan joins with the result of previous joins on the left
+fn build_left_deep_tree(scans: Vec<PhysicalOperator>) -> Option<PhysicalOperator> {
+    if scans.is_empty() {
+        return None;
+    }
+    if scans.len() == 1 {
+        return Some(scans[0].clone());
+    }
+
+    let mut result = scans[0].clone();
+    for scan in &scans[1..] {
+        result = PhysicalOperator::HashJoin {
+            left: Box::new(result),
+            right: Box::new(scan.clone()),
+        };
+    }
+    Some(result)
+}
+
+// Build a right-deep join tree: A join (B join (C join D))
+// Each scan joins with the result of remaining scans on the right
+fn build_right_deep_tree(scans: Vec<PhysicalOperator>) -> Option<PhysicalOperator> {
+    if scans.is_empty() {
+        return None;
+    }
+    if scans.len() == 1 {
+        return Some(scans[0].clone());
+    }
+
+    let mut result = scans[scans.len() - 1].clone();
+    for i in (0..scans.len() - 1).rev() {
+        result = PhysicalOperator::HashJoin {
+            left: Box::new(scans[i].clone()),
+            right: Box::new(result),
+        };
+    }
+    Some(result)
+}
+
+// Build a balanced join tree (zigzag pattern)
+// Pairs up scans progressively to create a more balanced structure
+fn build_balanced_tree(scans: Vec<PhysicalOperator>) -> Option<PhysicalOperator> {
+    if scans.is_empty() {
+        return None;
+    }
+    if scans.len() == 1 {
+        return Some(scans[0].clone());
+    }
+
+    let mut current_level = scans.clone();
+    
+    while current_level.len() > 1 {
+        let mut next_level = Vec::new();
+        
+        // Pair up adjacent scans at this level
+        for i in (0..current_level.len()).step_by(2) {
+            if i + 1 < current_level.len() {
+                next_level.push(PhysicalOperator::HashJoin {
+                    left: Box::new(current_level[i].clone()),
+                    right: Box::new(current_level[i + 1].clone()),
+                });
+            } else {
+                // Odd one out, carry to next level
+                next_level.push(current_level[i].clone());
+            }
+        }
+        
+        current_level = next_level;
+    }
+    
+    current_level.pop()
+}
+
+// Generate alternative tree structures by reordering and restructuring leaf scans
+// This produces meaningfully different join orders (not just child swaps)
+// Returns several alternative tree structures with the same leaves
+fn restructure_plan_tree(plan: &PhysicalOperator, container_stats: &ContainerStats) -> Vec<PhysicalOperator> {
+    // Extract all leaf scans from the current plan
+    let mut leaf_scans = extract_leaf_scans_physical(plan);
+    
+    // Need at least 2 scans to make restructuring worthwhile
+    if leaf_scans.len() < 2 {
+        return vec![];
+    }
+
+    // Prefer starting from the most selective scans based on observed window stats.
+    leaf_scans.sort_by_key(|scan| {
+        estimate_scan_cardinality_for_sort(scan, container_stats)
+    });
+
+    let mut alternatives = Vec::new();
+
+    // Generate different tree structures with same scans
+    if let Some(left_deep) = build_left_deep_tree(leaf_scans.clone()) {
+        alternatives.push(left_deep);
+    }
+
+    if let Some(right_deep) = build_right_deep_tree(leaf_scans.clone()) {
+        alternatives.push(right_deep);
+    }
+
+    if let Some(balanced) = build_balanced_tree(leaf_scans.clone()) {
+        alternatives.push(balanced);
+    }
+
+    // Generate pair-first alternatives to vary which leaves are joined earliest.
+    if leaf_scans.len() <= 6 {
+        for i in 0..leaf_scans.len() {
+            for j in (i + 1)..leaf_scans.len() {
+                if let Some(pair_first) = build_pair_first_tree(&leaf_scans, i, j) {
+                    alternatives.push(pair_first);
+                }
+            }
+        }
+    }
+
+    // // Generate a variant with reversed scan order (first scan pairs with last)
+    // let mut reversed_scans = leaf_scans.clone();
+    // reversed_scans.reverse();
+    // if let Some(reversed_left_deep) = build_left_deep_tree(reversed_scans) {
+    //     alternatives.push(reversed_left_deep);
+    // }
+
+    alternatives
+}
+
+fn estimate_scan_cardinality_for_sort(scan: &PhysicalOperator, container_stats: &ContainerStats) -> i64 {
+    match scan {
+        PhysicalOperator::TableScan { pattern } => {
+            let total = container_stats.get_total_triples().max(1);
+            let avg_subject = (total / (container_stats.get_total_subjects().max(1) as i64)).max(1);
+            let avg_predicate = (total / (container_stats.get_total_predicates().max(1) as i64)).max(1);
+            let avg_object = (total / (container_stats.get_total_objects().max(1) as i64)).max(1);
+
+            let subject_estimate = match &pattern.0 {
+                shared::terms::Term::Constant(subject) => container_stats.get_subject_cardinality(*subject).max(1),
+                _ => avg_subject,
+            };
+            let predicate_estimate = match &pattern.1 {
+                shared::terms::Term::Constant(predicate) => container_stats.get_predicate_cardinality(*predicate).max(1),
+                _ => avg_predicate,
+            };
+            let object_estimate = match &pattern.2 {
+                shared::terms::Term::Constant(object) => container_stats.get_object_cardinality(*object).max(1),
+                _ => avg_object,
+            };
+
+            let mut bound_terms = 0;
+            if matches!(pattern.0, shared::terms::Term::Constant(_)) {
+                bound_terms += 1;
+            }
+            if matches!(pattern.1, shared::terms::Term::Constant(_)) {
+                bound_terms += 1;
+            }
+            if matches!(pattern.2, shared::terms::Term::Constant(_)) {
+                bound_terms += 1;
+            }
+
+            // Favors more bound triple patterns first, then lower estimated cardinality.
+            // Keep the key non-negative: lower key means better scan to join earlier.
+            let selectivity_score = (subject_estimate + predicate_estimate + object_estimate).max(1);
+            let unbound_penalty = ((3 - bound_terms) as i64) * total;
+            selectivity_score + unbound_penalty
+        }
+        _ => container_stats.get_total_triples().max(1),
+    }
+}
+
+fn build_pair_first_tree(scans: &[PhysicalOperator], first_idx: usize, second_idx: usize) -> Option<PhysicalOperator> {
+    if scans.len() < 2 || first_idx >= scans.len() || second_idx >= scans.len() || first_idx == second_idx {
+        return None;
+    }
+
+    let mut result = PhysicalOperator::HashJoin {
+        left: Box::new(scans[first_idx].clone()),
+        right: Box::new(scans[second_idx].clone()),
+    };
+
+    for (idx, scan) in scans.iter().enumerate() {
+        if idx == first_idx || idx == second_idx {
+            continue;
+        }
+        result = PhysicalOperator::HashJoin {
+            left: Box::new(result),
+            right: Box::new(scan.clone()),
+        };
+    }
+
+    Some(result)
+}
+
+// fn estimate_scan_cardinality_for_sort(scan: &PhysicalOperator, container_stats: &ContainerStats) -> i64 {
+//     match scan {
+//         PhysicalOperator::TableScan { pattern } => {
+//             match &pattern.1 {
+//                 shared::terms::Term::Constant(predicate) => container_stats.get_predicate_cardinality(*predicate).max(1),
+//                 _ => container_stats.get_total_triples().max(1),
+//             }
+//         }
+//         _ => container_stats.get_total_triples().max(1),
+//     }
+// }
+
+/*
+GENERATE ALL PLANS
+By me, but filters with genAI 
+ */
 
 // Given a list of operators, recursively make a list of all possible logical plans where everything gets joined
 // Initial call contains a list of Scan operators
@@ -164,6 +564,12 @@ enum TopLevelOp {
     Projection(Vec<String>),
 }
 
+#[derive(Clone, Debug)]
+enum TopLevelPhysicalOp {
+    Filter(Condition),
+    Projection(Vec<String>),
+}
+
 // vibe
 fn strip_top_level_ops(logical_plan: LogicalOperator) -> (LogicalOperator, Vec<TopLevelOp>) {
     let mut ops = Vec::new();
@@ -195,6 +601,45 @@ fn apply_top_level_ops(plan: LogicalOperator, ops: &[TopLevelOp]) -> LogicalOper
             TopLevelOp::Projection(variables) => {
                 LogicalOperator::projection(current, variables.clone())
             }
+        };
+    }
+
+    current
+}
+
+fn strip_top_level_physical_ops(physical_plan: PhysicalOperator) -> (PhysicalOperator, Vec<TopLevelPhysicalOp>) {
+    let mut ops = Vec::new();
+    let mut current = physical_plan;
+
+    loop {
+        match current {
+            PhysicalOperator::Filter { input, condition } => {
+                ops.push(TopLevelPhysicalOp::Filter(condition));
+                current = *input;
+            }
+            PhysicalOperator::Projection { input, variables } => {
+                ops.push(TopLevelPhysicalOp::Projection(variables));
+                current = *input;
+            }
+            _ => break,
+        }
+    }
+
+    (current, ops)
+}
+
+fn apply_top_level_physical_ops(plan: PhysicalOperator, ops: &[TopLevelPhysicalOp]) -> PhysicalOperator {
+    let mut current = plan;
+    for op in ops.iter().rev() {
+        current = match op {
+            TopLevelPhysicalOp::Filter(condition) => PhysicalOperator::Filter {
+                input: Box::new(current),
+                condition: condition.clone(),
+            },
+            TopLevelPhysicalOp::Projection(variables) => PhysicalOperator::Projection {
+                input: Box::new(current),
+                variables: variables.clone(),
+            },
         };
     }
 
@@ -362,7 +807,7 @@ mod tests {
     fn test_generate_all_reorderings() {
         // Similar to example in simple_volcano.rs
 
-        let mut database = SparqlDatabase::new();
+        let database = SparqlDatabase::new();
         let mut dict = database.dictionary.write().unwrap(); // Get lock
         let name_id = dict.encode("http://example.org/name");
         let age_id = dict.encode("http://example.org/age");

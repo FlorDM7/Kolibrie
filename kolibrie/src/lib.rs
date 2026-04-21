@@ -29,3 +29,5 @@ pub mod query_engine;
 pub mod join_reordering;
 pub mod container_stats;
 pub mod stream_estimator;
+
+pub mod experiment_logging;

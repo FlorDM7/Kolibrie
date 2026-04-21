@@ -1,7 +1,7 @@
 extern crate kolibrie;
-use kolibrie::{container_stats::ContainerStats, query_builder, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, streamertail_optimizer::{LogicalOperator, PhysicalOperator}};
+use kolibrie::{container_stats::ContainerStats, experiment_logging, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, streamertail_optimizer::{LogicalOperator, PhysicalOperator}};
 use shared::triple::Triple;
-use std::{fs::read_to_string, sync::{Arc, Mutex}, time::Instant};
+use std::{fmt, fs::read_to_string, path::Path, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
 use kolibrie::join_reordering;
 use serde::Deserialize;
 
@@ -60,7 +60,27 @@ pub fn are_physical_plans_identical(left: &PhysicalOperator, right: &PhysicalOpe
     physical_plan_to_string(left) == physical_plan_to_string(right)
 }
 
-pub fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
+fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
+    // Set up a file to write results
+    let dataset_name = Path::new(&path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("experiment");
+    let run_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before UNIX_EPOCH")
+        .as_secs();
+    let log_file_path = format!(
+        "target/experiment_logs/{}_{}_{}.csv",
+        dataset_name,
+        run_id,
+        replan_trigger.to_string()
+    );
+
+    experiment_logging::init_experiment_log(&log_file_path)
+        .expect("failed to initialize experiment log");
+    println!("Logging experiment metrics to {}", log_file_path);
+
     // Collect results via a shared container that the engine writes into. (just like in rsp_engine_test.rs)
     let result_container = Arc::new(Mutex::new(Vec::new()));
     let result_container_clone = Arc::clone(&result_container);
@@ -88,10 +108,12 @@ pub fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
 
     // Select logical plan of the first (and only) window
     let logical_plan = window_plans.first().unwrap().clone();
+    let first_window_iri = window_info.first().unwrap().window_iri.clone();
     let replan_metric = make_replan_fn(replan_trigger);
 
     // Variable to keep track of the stats of the previous window
     let previous_stats = Arc::new(Mutex::new(ContainerStats::default()));
+    let first_window_plan_done = Arc::new(Mutex::new(false));
 
     // Runtime adaptor: inspect each fired window and optionally swap plan
     engine.set_window_plan_adaptor(
@@ -135,37 +157,83 @@ pub fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
 
             // dbg!(&_current_plan);
 
+            // Check if it's the first time we see this window
+            let force_initial_plan = if window_iri == first_window_iri {
+                let mut first_window_plan_done_guard = first_window_plan_done.lock().unwrap();
+                if !*first_window_plan_done_guard {
+                    *first_window_plan_done_guard = true;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
             // START new plan calculation
             let start_calculation = Instant::now();
 
             // Decide whether to replan based on the selected trigger.
-            let replan = replan_metric(&current_stats, &previous_stats);
+            let replan = force_initial_plan || replan_metric(&current_stats, &previous_stats);
+            
             // Calculate a potential new plan 
             if replan {
-                let new_plan = join_reordering::recalculate_window_plan(logical_plan.clone(), current_stats.clone());
-                
-                println!("[Adaptor] Recalculate plan for {}", window_iri);
+                let new_plan: PhysicalOperator = if force_initial_plan {
+                    println!("[Adaptor] Manually calculated initial plan for {}", window_iri);
+                    join_reordering::calculate_initial_window_plan(logical_plan.clone(), current_stats.clone())
+                } else {
+                    println!("[Adaptor] Recalculate plan for {}", window_iri);
+                    join_reordering::recalculate_window_plan(_current_plan.clone(), current_stats.clone())
+                    // join_reordering::calculate_initial_window_plan(logical_plan.clone(), current_stats.clone())
+                };
+
+                // for debugging: check if the new plan is actually different from the current plan
                 if are_physical_plans_identical(_current_plan, &new_plan) {
                     println!("[Adaptor] The same plan was chosen");
                 } else {
+                    // dbg!(&new_plan);
                     println!("[Adaptor] New plan was chosen");
                 }
-                // dbg!(&new_plan);
-                *previous_stats_guard = current_stats; // Update previous stats for next window
 
                 let optimize_plan_time = start_calculation.elapsed().as_secs_f64() * 1000.0;
                 println!("[Timing] window={} latency={:.3}ms stats_time={:.3}ms tuples={}", 
                     window_iri, optimize_plan_time, stats_time, window_size);
+                if let Err(error) = experiment_logging::append_experiment_row(
+                    "optimize",
+                    window_iri,
+                    ts,
+                    optimize_plan_time,
+                    Some(stats_time),
+                    window_size,
+                    None,
+                    if force_initial_plan { "initial" } else { "replan" },
+                ) {
+                    eprintln!("Failed to write optimization timing for {}: {:?}", window_iri, error);
+                }
+                *previous_stats_guard = current_stats; // Update previous stats for next window
                 return Some(new_plan);
             }
-            
-            // Plan remains the same
-            println!("[Adaptor] Plan remains the same {}", window_iri);
-            *previous_stats_guard = current_stats; // Update previous stats for next window
             
             let optimize_plan_time = start_calculation.elapsed().as_secs_f64() * 1000.0;
             println!("[Timing] window={} latency={:.3}ms stats_time={:.3}ms tuples={}", 
                 window_iri, optimize_plan_time, stats_time, window_size);
+            if let Err(error) = experiment_logging::append_experiment_row(
+                "optimize",
+                window_iri,
+                ts,
+                optimize_plan_time,
+                Some(stats_time),
+                window_size,
+                None,
+                "no_change",
+            ) {
+                eprintln!("Failed to write optimization timing for {}: {:?}", window_iri, error);
+            }
+
+            // Plan remains the same
+            println!("[Adaptor] Plan remains the same {}", window_iri);
+            *previous_stats_guard = current_stats; // Update previous stats for next window
+
             return None;
         },
     ));
@@ -183,7 +251,7 @@ fn print_engine_results(result_container: Arc<Mutex<Vec<Vec<(String, String)>>>>
 
     println!("RSP result batches: {}", results.len());
     for (batch_idx, batch) in results.iter().enumerate() {
-        if batch_idx > 10 {
+        if batch_idx > 5 {
             break;
         }
         println!("Batch {} ({} bindings)", batch_idx + 1, batch.len());
@@ -321,6 +389,21 @@ enum ReplanTrigger {
     Hybrid { size_threshold: f64, distribution_threshold: f64, ranking_threshold: f64 },
 }
 
+impl fmt::Display for ReplanTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReplanTrigger::Static => write!(f, "Static"),
+            ReplanTrigger::Always => write!(f, "Always"),
+            ReplanTrigger::OnSizeChange { threshold } => write!(f, "OnSizeChange({})", threshold),
+            ReplanTrigger::OnDistributionChange { threshold } => write!(f, "OnDistributionChange({})", threshold),
+            ReplanTrigger::OnRankingChange { threshold } => write!(f, "OnRankingChange({})", threshold),
+            ReplanTrigger::Hybrid { size_threshold, distribution_threshold, ranking_threshold } => {
+                write!(f, "Hybrid({},{},{})", size_threshold, distribution_threshold, ranking_threshold)
+            }
+        }
+    }
+}
+
 fn example_window3(path: String, replan_trigger: ReplanTrigger) {
     let query = r#"
     PREFIX ex: <http://example.org/stream/>
@@ -345,6 +428,6 @@ fn main() {
     // example_window("datasets/dataset_windowed_test.nt".to_string());
     // example_window2("datasets/books.events.ndjson".to_string(), ReplanTrigger::Always);
     // example_window3("datasets/optimizer_case_static.events.ndjson".to_string(), ReplanTrigger::Static);
-    example_window3("datasets/optimizer_case_volatile.events.ndjson".to_string(), ReplanTrigger::Always);
+    example_window3("datasets/optimizer_case_volatile.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.1 });
     // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.05 });
 }

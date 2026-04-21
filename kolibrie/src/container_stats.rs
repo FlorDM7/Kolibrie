@@ -222,7 +222,8 @@ impl ContainerStats {
                 (curr_prob - prev_prob).abs()
             })
             .sum();
-
+        
+        dbg!("L1 distance: {}", 0.5*l1_distance);
         0.5 * l1_distance
     }
 

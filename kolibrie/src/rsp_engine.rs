@@ -7,6 +7,7 @@
 * you can obtain one at [https://mozilla.org/MPL/2.0/](https://mozilla.org/MPL/2.0/).
 */
 
+use crate::experiment_logging;
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::Relation2StreamOperator;
 use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick};
@@ -118,6 +119,7 @@ macro_rules! create_window_processor {
             );
 
             let ts = content.get_last_timestamp_changed();
+            let window_size = content.len();
             let mut store = $r2r_store.lock().unwrap();
 
             // Evict triples from the previous firing of this window
@@ -143,10 +145,27 @@ macro_rules! create_window_processor {
 
             // Query execution ends here, print elapsed time
             let query_execution_time = query_start.elapsed().as_secs_f64() * 1000.0;
+
             println!(
                 "[WindowQueryTime] window={} ts={} query_execution_time={:.3} ms results={}",
                 $window_iri, ts, query_execution_time, results.len()
             );
+
+            if let Err(error) = experiment_logging::append_experiment_row(
+                "query",
+                &$window_iri,
+                ts,
+                query_execution_time,
+                None,
+                window_size,
+                Some(results.len()),
+                "",
+            ) {
+                error!(
+                    "Failed to write query timing for window {}: {:?}",
+                    $window_iri, error
+                );
+            }
 
             // Release lock early to reduce contention
             drop(store);
