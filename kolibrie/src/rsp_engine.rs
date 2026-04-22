@@ -146,10 +146,10 @@ macro_rules! create_window_processor {
             // Query execution ends here, print elapsed time
             let query_execution_time = query_start.elapsed().as_secs_f64() * 1000.0;
 
-            println!(
-                "[WindowQueryTime] window={} ts={} query_execution_time={:.3} ms results={}",
-                $window_iri, ts, query_execution_time, results.len()
-            );
+            // println!(
+            //     "[WindowQueryTime] window={} ts={} query_execution_time={:.3} ms results={}",
+            //     $window_iri, ts, query_execution_time, results.len()
+            // );
 
             if let Err(error) = experiment_logging::append_experiment_row(
                 "query",

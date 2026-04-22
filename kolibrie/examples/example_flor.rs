@@ -144,12 +144,12 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger, naief
             // );
 
             // Take a quick look at the stats  
-            println!("Current stats: Total: {}, Cardinalities: {}, {}, {}",
-                current_stats.get_total_triples(),
-                current_stats.get_total_subjects(),
-                current_stats.get_total_predicates(),
-                current_stats.get_total_objects()
-            );
+            // println!("Current stats: Total: {}, Cardinalities: {}, {}, {}",
+            //     current_stats.get_total_triples(),
+            //     current_stats.get_total_subjects(),
+            //     current_stats.get_total_predicates(),
+            //     current_stats.get_total_objects()
+            // );
              
             // println!(
             //     "[Adaptor] window={} ts={} tuples_in_window={}",
@@ -159,7 +159,7 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger, naief
             // dbg!(&_current_plan);
 
             // Check if it's the first time we see this window
-            let force_initial_plan = naief || if window_iri == first_window_iri {
+            let force_initial_plan = if window_iri == first_window_iri {
                 let mut first_window_plan_done_guard = first_window_plan_done.lock().unwrap();
                 if !*first_window_plan_done_guard {
                     *first_window_plan_done_guard = true;
@@ -179,21 +179,21 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger, naief
             
             // Calculate a potential new plan 
             if replan {
-                let new_plan: PhysicalOperator = if force_initial_plan {
-                    println!("[Adaptor] Manually calculated initial plan for {}", window_iri);
+                let new_plan: PhysicalOperator = if (naief || force_initial_plan) {
+                    // println!("[Adaptor] Manually calculated initial plan for {}", window_iri);
                     join_reordering::calculate_initial_window_plan(logical_plan.clone(), current_stats.clone())
                 } else {
-                    println!("[Adaptor] Recalculate plan for {}", window_iri);
+                    //println!("[Adaptor] Recalculate plan for {}", window_iri);
                     join_reordering::recalculate_window_plan(_current_plan.clone(), current_stats.clone())
                 };
 
                 // for debugging: check if the new plan is actually different from the current plan
-                if are_physical_plans_identical(_current_plan, &new_plan) {
-                    println!("[Adaptor] The same plan was chosen");
-                } else {
-                    // dbg!(&new_plan);
-                    println!("[Adaptor] New plan was chosen");
-                }
+                // if are_physical_plans_identical(_current_plan, &new_plan) {
+                //     println!("[Adaptor] The same plan was chosen");
+                // } else {
+                //     // dbg!(&new_plan);
+                //     println!("[Adaptor] New plan was chosen");
+                // }
 
                 let optimize_plan_time = start_calculation.elapsed().as_secs_f64() * 1000.0;
                 println!("[Timing] window={} latency={:.3}ms stats_time={:.3}ms tuples={}", 
@@ -250,15 +250,15 @@ fn print_engine_results(result_container: Arc<Mutex<Vec<Vec<(String, String)>>>>
     let results = result_container.lock().unwrap();
 
     println!("RSP result batches: {}", results.len());
-    for (batch_idx, batch) in results.iter().enumerate() {
-        if batch_idx > 4 { // only print first 5 batches for readability
-            break;
-        }
-        println!("Batch {} ({} bindings)", batch_idx + 1, batch.len());
-        for (binding_idx, binding) in batch.iter().enumerate() {
-            println!("  [{}] {:?}", binding_idx + 1, binding);
-        }
-    }
+    // for (batch_idx, batch) in results.iter().enumerate() {
+    //     if batch_idx > 4 { // only print first 5 batches for readability
+    //         break;
+    //     }
+    //     println!("Batch {} ({} bindings)", batch_idx + 1, batch.len());
+    //     for (binding_idx, binding) in batch.iter().enumerate() {
+    //         println!("  [{}] {:?}", binding_idx + 1, binding);
+    //     }
+    // }
 }
 
 fn stream_dataset_as_subject_groups(
@@ -396,8 +396,8 @@ impl fmt::Display for ReplanTrigger {
             ReplanTrigger::Static => write!(f, "Static"),
             ReplanTrigger::Always => write!(f, "Always"),
             ReplanTrigger::OnSizeChange { threshold } => write!(f, "OnSizeChange({})", threshold),
-            ReplanTrigger::OnDistributionChange { threshold } => write!(f, "OnDistributionChange({})", threshold),
-            ReplanTrigger::OnRankingChange { threshold } => write!(f, "OnRankingChange({})", threshold),
+            ReplanTrigger::OnDistributionChange { threshold } => write!(f, "OnDistributionChange"),
+            ReplanTrigger::OnRankingChange { threshold } => write!(f, "OnRankingChange" ),
             ReplanTrigger::Hybrid { size_threshold, distribution_threshold, ranking_threshold } => {
                 write!(f, "Hybrid({},{},{})", size_threshold, distribution_threshold, ranking_threshold)
             }
@@ -411,7 +411,7 @@ fn example_window3(path: String, replan_trigger: ReplanTrigger, naief: bool) {
 
     REGISTER RSTREAM <output> AS
     SELECT ?reading ?sensor ?zone ?value
-    FROM NAMED WINDOW :window1 ON :stream [RANGE 100 STEP 100]
+    FROM NAMED WINDOW :window1 ON :stream [RANGE 200 STEP 200]
     WHERE {
     WINDOW :window1 {
         ?reading <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ex:Reading .
@@ -438,20 +438,20 @@ fn experiment() {
     let static_path = "datasets/optimizer_case_static.events.ndjson".to_string();
     let volatile_path = "datasets/optimizer_case_volatile.events.ndjson".to_string();
     let gradual_path = "datasets/optimizer_case_gradual.events.ndjson".to_string();
-    let naief = true;
+    let naief = false;
     // Static data
     example_window3(static_path.clone(), ReplanTrigger::Static, naief);
     example_window3(static_path.clone(), ReplanTrigger::Always, naief);
-    example_window3(static_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
-    example_window3(static_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
+    example_window3(static_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.2 }, naief);
+    example_window3(static_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.3 }, naief);
     // Dynamic data
     example_window3(volatile_path.clone(), ReplanTrigger::Static, naief);
     example_window3(volatile_path.clone(), ReplanTrigger::Always, naief);
-    example_window3(volatile_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
-    example_window3(volatile_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
+    example_window3(volatile_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.2 }, naief);
+    example_window3(volatile_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.3 }, naief);
     // Gradual data change
     example_window3(gradual_path.clone(), ReplanTrigger::Static, naief);
     example_window3(gradual_path.clone(), ReplanTrigger::Always, naief);
-    example_window3(gradual_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
-    example_window3(gradual_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
+    example_window3(gradual_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.2 }, naief);
+    example_window3(gradual_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.3 }, naief);
 }

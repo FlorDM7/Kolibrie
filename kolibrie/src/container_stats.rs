@@ -223,7 +223,7 @@ impl ContainerStats {
             })
             .sum();
         
-        dbg!(0.5 * l1_distance);
+        // dbg!(0.5 * l1_distance);
         0.5 * l1_distance
     }
 
@@ -306,6 +306,7 @@ impl ContainerStats {
         if comparable_pairs == 0 {
             0.0
         } else {
+            // dbg!((flipped_pairs as f64) / (comparable_pairs as f64));
             (flipped_pairs as f64) / (comparable_pairs as f64)
         }
     }

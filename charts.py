@@ -43,20 +43,20 @@ def split_data(title, data1, data2, data3, data4, filename1=None, filename2=None
 def main():
     static1 = "target/experiment_logs/optimizer_case_static.events_Static"
     static2 = "target/experiment_logs/optimizer_case_static.events_Always"
-    static3 = "target/experiment_logs/optimizer_case_static.events_OnDistributionChange(0.25)"
-    static4 = "target/experiment_logs/optimizer_case_static.events_OnRankingChange(0.05)"
+    static3 = "target/experiment_logs/optimizer_case_static.events_OnDistributionChange"
+    static4 = "target/experiment_logs/optimizer_case_static.events_OnRankingChange"
 
     volatile1 = "target/experiment_logs/optimizer_case_volatile.events_Static"
     volatile2 = "target/experiment_logs/optimizer_case_volatile.events_Always"
-    volatile3 = "target/experiment_logs/optimizer_case_volatile.events_OnDistributionChange(0.25)"
-    volatile4 = "target/experiment_logs/optimizer_case_volatile.events_OnRankingChange(0.05)"
+    volatile3 = "target/experiment_logs/optimizer_case_volatile.events_OnDistributionChange"
+    volatile4 = "target/experiment_logs/optimizer_case_volatile.events_OnRankingChange"
 
     gradual1 = "target/experiment_logs/optimizer_case_gradual.events_Static"
     gradual2 = "target/experiment_logs/optimizer_case_gradual.events_Always"
-    gradual3 = "target/experiment_logs/optimizer_case_gradual.events_OnDistributionChange(0.25)"
-    gradual4 = "target/experiment_logs/optimizer_case_gradual.events_OnRankingChange(0.05)"
+    gradual3 = "target/experiment_logs/optimizer_case_gradual.events_OnDistributionChange"
+    gradual4 = "target/experiment_logs/optimizer_case_gradual.events_OnRankingChange"
 
-    extra = "_naief"
+    extra = ""
 
     split_data("Static", static1, static2, static3, static4, f"static_optimize{extra}", f"static_execution{extra}")
     split_data("Volatile", volatile1, volatile2, volatile3, volatile4, f"volatile_optimize{extra}", f"volatile_execution{extra}")
