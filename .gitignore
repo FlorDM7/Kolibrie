@@ -90,3 +90,6 @@ benchmark_dataset/
 .idea/
  out.txt
 .zed/
+
+# Output of experiments
+out/

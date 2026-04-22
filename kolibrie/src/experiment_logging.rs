@@ -1,9 +1,9 @@
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-static LOG_FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
+static LOG_FILE_PATH: OnceLock<Mutex<PathBuf>> = OnceLock::new();
 
 pub fn init_experiment_log(file_path: impl Into<PathBuf>) -> io::Result<()> {
     let path = file_path.into();
@@ -20,15 +20,21 @@ pub fn init_experiment_log(file_path: impl Into<PathBuf>) -> io::Result<()> {
 
     writeln!(file, "phase,window,ts,elapsed_ms,aux_ms,tuples,results,note")?;
 
-    LOG_FILE_PATH
-        .set(path)
-        .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "experiment log already initialized"))
+    if let Some(lock) = LOG_FILE_PATH.get() {
+        let mut current_path = lock.lock().map_err(|_| io::Error::other("failed to lock experiment log path"))?;
+        *current_path = path;
+        Ok(())
+    } else {
+        LOG_FILE_PATH
+            .set(Mutex::new(path))
+            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "experiment log already initialized"))
+    }
 }
 
 fn current_log_path() -> PathBuf {
     LOG_FILE_PATH
         .get()
-        .cloned()
+        .and_then(|lock| lock.lock().ok().map(|path| path.clone()))
         .unwrap_or_else(|| PathBuf::from("target/experiment_logs/kolibrie_experiments.csv"))
 }
 

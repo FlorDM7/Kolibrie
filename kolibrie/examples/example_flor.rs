@@ -1,7 +1,7 @@
 extern crate kolibrie;
 use kolibrie::{container_stats::ContainerStats, experiment_logging, rsp::s2r::ContentContainer, rsp_engine::{OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R}, streamertail_optimizer::{LogicalOperator, PhysicalOperator}};
 use shared::triple::Triple;
-use std::{fmt, fs::read_to_string, path::Path, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
+use std::{fmt, fs::read_to_string, path::Path, sync::{Arc, Mutex}, time::Instant};
 use kolibrie::join_reordering;
 use serde::Deserialize;
 
@@ -13,7 +13,7 @@ struct StreamEvent {
 }
 
 #[allow(dead_code)]
-fn example_window(path: String, replan_trigger: ReplanTrigger) {
+fn example_window(path: String, replan_trigger: ReplanTrigger, naief: bool) {
     // SPARQL query
     let query = r#"  PREFIX ex: <http://example.org/>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -31,10 +31,11 @@ WHERE {
     }
 }"#;
 
-    set_up_engine(path, query, replan_trigger);
+    set_up_engine(path, query, replan_trigger, naief);
 }
 
-fn example_window2(path: String, replan_trigger: ReplanTrigger) {
+#[allow(dead_code)]
+fn example_window2(path: String, replan_trigger: ReplanTrigger, naief: bool) {
     let query = r#"
     PREFIX ex: <http://example.org/>
     REGISTER RSTREAM <output> AS
@@ -49,7 +50,7 @@ fn example_window2(path: String, replan_trigger: ReplanTrigger) {
     }
     "#;
 
-    set_up_engine(path, query, replan_trigger);
+    set_up_engine(path, query, replan_trigger, naief);
 }
 
 pub fn physical_plan_to_string(plan: &PhysicalOperator) -> String {
@@ -60,20 +61,20 @@ pub fn are_physical_plans_identical(left: &PhysicalOperator, right: &PhysicalOpe
     physical_plan_to_string(left) == physical_plan_to_string(right)
 }
 
-fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
+fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger, naief: bool) {
     // Set up a file to write results
     let dataset_name = Path::new(&path)
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("experiment");
-    let run_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before UNIX_EPOCH")
-        .as_secs();
+    // let run_id = SystemTime::now()
+    //     .duration_since(UNIX_EPOCH)
+    //     .expect("system clock is before UNIX_EPOCH")
+    //     .as_secs();
     let log_file_path = format!(
-        "target/experiment_logs/{}_{}_{}.csv",
+        "target/experiment_logs/{}_{}.csv",
         dataset_name,
-        run_id,
+    //    run_id,
         replan_trigger.to_string()
     );
 
@@ -158,7 +159,7 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
             // dbg!(&_current_plan);
 
             // Check if it's the first time we see this window
-            let force_initial_plan = if window_iri == first_window_iri {
+            let force_initial_plan = naief || if window_iri == first_window_iri {
                 let mut first_window_plan_done_guard = first_window_plan_done.lock().unwrap();
                 if !*first_window_plan_done_guard {
                     *first_window_plan_done_guard = true;
@@ -184,7 +185,6 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger) {
                 } else {
                     println!("[Adaptor] Recalculate plan for {}", window_iri);
                     join_reordering::recalculate_window_plan(_current_plan.clone(), current_stats.clone())
-                    // join_reordering::calculate_initial_window_plan(logical_plan.clone(), current_stats.clone())
                 };
 
                 // for debugging: check if the new plan is actually different from the current plan
@@ -251,7 +251,7 @@ fn print_engine_results(result_container: Arc<Mutex<Vec<Vec<(String, String)>>>>
 
     println!("RSP result batches: {}", results.len());
     for (batch_idx, batch) in results.iter().enumerate() {
-        if batch_idx > 5 {
+        if batch_idx > 4 { // only print first 5 batches for readability
             break;
         }
         println!("Batch {} ({} bindings)", batch_idx + 1, batch.len());
@@ -363,10 +363,10 @@ fn make_replan_fn(trigger: ReplanTrigger) -> ReplanFn {
             Arc::new(move |current, previous| current.size_change_ratio(previous) > threshold)
         }
         ReplanTrigger::OnDistributionChange { threshold } => Arc::new(move |current, previous| {
-            current.subject_distribution_distance(previous) > threshold
+            current.object_distribution_distance(previous) > threshold
         }),
         ReplanTrigger::OnRankingChange { threshold } => {
-            Arc::new(move |current, previous| current.rank_change_ratio(previous) > threshold)
+            Arc::new(move |current, previous| current.object_rank_change_ratio(previous) > threshold)
         }
         ReplanTrigger::Hybrid {
             size_threshold,
@@ -374,12 +374,13 @@ fn make_replan_fn(trigger: ReplanTrigger) -> ReplanFn {
             ranking_threshold,
         } => Arc::new(move |current, previous| {
             current.size_change_ratio(previous) > size_threshold
-                || current.predicate_distribution_distance(previous) > distribution_threshold
-                || current.rank_change_ratio(previous) > ranking_threshold
+                || current.object_distribution_distance(previous) > distribution_threshold
+                || current.object_rank_change_ratio(previous) > ranking_threshold
         }),
     }
 }
 
+#[allow(dead_code)]
 enum ReplanTrigger {
     Static,
     Always,
@@ -404,7 +405,7 @@ impl fmt::Display for ReplanTrigger {
     }
 }
 
-fn example_window3(path: String, replan_trigger: ReplanTrigger) {
+fn example_window3(path: String, replan_trigger: ReplanTrigger, naief: bool) {
     let query = r#"
     PREFIX ex: <http://example.org/stream/>
 
@@ -421,13 +422,36 @@ fn example_window3(path: String, replan_trigger: ReplanTrigger) {
     }
     }"#;
 
-    set_up_engine(path, query, replan_trigger);
+    set_up_engine(path, query, replan_trigger, naief);
 }
 
 fn main() {
     // example_window("datasets/dataset_windowed_test.nt".to_string());
     // example_window2("datasets/books.events.ndjson".to_string(), ReplanTrigger::Always);
     // example_window3("datasets/optimizer_case_static.events.ndjson".to_string(), ReplanTrigger::Static);
-    example_window3("datasets/optimizer_case_volatile.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.1 });
+    // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.25 });
     // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.05 });
+    experiment();
+}
+
+fn experiment() {
+    let static_path = "datasets/optimizer_case_static.events.ndjson".to_string();
+    let volatile_path = "datasets/optimizer_case_volatile.events.ndjson".to_string();
+    let gradual_path = "datasets/optimizer_case_gradual.events.ndjson".to_string();
+    let naief = true;
+    // Static data
+    example_window3(static_path.clone(), ReplanTrigger::Static, naief);
+    example_window3(static_path.clone(), ReplanTrigger::Always, naief);
+    example_window3(static_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
+    example_window3(static_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
+    // Dynamic data
+    example_window3(volatile_path.clone(), ReplanTrigger::Static, naief);
+    example_window3(volatile_path.clone(), ReplanTrigger::Always, naief);
+    example_window3(volatile_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
+    example_window3(volatile_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
+    // Gradual data change
+    example_window3(gradual_path.clone(), ReplanTrigger::Static, naief);
+    example_window3(gradual_path.clone(), ReplanTrigger::Always, naief);
+    example_window3(gradual_path.clone(), ReplanTrigger::OnDistributionChange { threshold: 0.25 }, naief);
+    example_window3(gradual_path.clone(), ReplanTrigger::OnRankingChange { threshold: 0.05 }, naief);
 }

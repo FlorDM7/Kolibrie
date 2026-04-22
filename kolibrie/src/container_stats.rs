@@ -223,47 +223,32 @@ impl ContainerStats {
             })
             .sum();
         
-        dbg!("L1 distance: {}", 0.5*l1_distance);
+        dbg!(0.5 * l1_distance);
         0.5 * l1_distance
     }
 
     // OPTION 3: RANK-CHANGE TRIGGER
     // advantages: looks at join ordering changes
-    // disadvantages: lot of work, naad stable handling for ties
-    pub fn should_replan_rank_change(&self, previous_stats: &ContainerStats) -> bool {
-        // Replan if enough pairwise ordering relations between predicates flipped.
-        let rank_ratio = self.rank_change_ratio(previous_stats);
-        rank_ratio > 0.2
-    }
-
-    // Same as predicate rank-change, but for subjects.
-    pub fn should_replan_subject_rank_change(&self, previous_stats: &ContainerStats) -> bool {
-        self.subject_rank_change_ratio(previous_stats) > 0.2
-    }
-
-    // Same as predicate rank-change, but for objects.
-    pub fn should_replan_object_rank_change(&self, previous_stats: &ContainerStats) -> bool {
-        self.object_rank_change_ratio(previous_stats) > 0.2
-    }
+    // disadvantages: lot of work, need stable handling for ties
 
     // Pairwise rank-change ratio across predicate selectivities.
     // A "pair" is any 2 predicates (pi, pj). A pair is "flipped"
     // when their relative order changes between windows.
-    pub fn rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn predicate_rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
         Self::rank_change_ratio_from_maps(
             &self.predicate_cardinalities,
             &previous_stats.predicate_cardinalities,
         )
     }
 
-    fn subject_rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn subject_rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
         Self::rank_change_ratio_from_maps(
             &self.subject_cardinalities,
             &previous_stats.subject_cardinalities,
         )
     }
 
-    fn object_rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
+    pub fn object_rank_change_ratio(&self, previous_stats: &ContainerStats) -> f64 {
         Self::rank_change_ratio_from_maps(
             &self.object_cardinalities,
             &previous_stats.object_cardinalities,
@@ -325,28 +310,8 @@ impl ContainerStats {
         }
     }
 
-    // // OPTION 4: COST-BASED TRIGGER
-    // fn should_replan_cost_based(&self, previous_stats: &ContainerStats) -> bool {
-    //     self.cost_improvement(previous_stats) > 0.1
-    // }
-
-    // fn cost_improvement(&self, previous_stats: &ContainerStats) -> f64 {
-        
-    // }
-
     // LAST OPTION: Hybrid
-    pub fn should_replan_hybrid(&self, previous_stats: &ContainerStats) -> bool {
-        if self.should_replan_size_change(previous_stats) {
-            true
-        } else if self.should_replan_predicate_distribution(previous_stats) {
-            true
-        } else if self.should_replan_rank_change(previous_stats) {
-            true
-        } else {
-            false
-        }
-    }
-
+    // Combination of multiple triggers
 }
 
 fn compare_with_epsilon(a: f64, b: f64, epsilon: f64) -> i8 {
@@ -566,6 +531,8 @@ mod tests {
         assert_eq!(stats.get_join_selectivity(999), 0.0);
     }
 
+    // TEST DISTRIBUTION SHIFT
+
     #[test]
     fn test_should_replan_count_distribution_true_on_large_shift() {
         let previous_stats = make_stats_from_predicates(&[(1, 8), (2, 2)]);
@@ -582,24 +549,7 @@ mod tests {
         assert!(!current_stats.should_replan_predicate_distribution(&previous_stats));
     }
 
-    #[test]
-    fn test_should_replan_basic_true_on_rank_flip() {
-        let previous_stats = make_stats_from_predicates(&[(1, 1), (2, 2), (3, 4)]);
-        let current_stats = make_stats_from_predicates(&[(1, 3), (2, 2), (3, 4)]);
-
-        // One of three predicate pairs flips order => 0.333 > 0.2
-        assert!(current_stats.should_replan_rank_change(&previous_stats));
-    }
-
-    #[test]
-    fn test_should_replan_basic_false_when_rank_stable() {
-        let previous_stats = make_stats_from_predicates(&[(1, 1), (2, 2), (3, 4)]);
-        let current_stats = make_stats_from_predicates(&[(1, 2), (2, 3), (3, 6)]);
-
-        assert!(!current_stats.should_replan_rank_change(&previous_stats));
-    }
-
-    #[test]
+     #[test]
     fn test_should_replan_subject_distribution_true_on_large_shift() {
         let previous_stats = make_stats_from_subjects(&[(10, 8), (11, 2)]);
         let current_stats = make_stats_from_subjects(&[(10, 2), (11, 8)]);
@@ -615,12 +565,31 @@ mod tests {
         assert!(!current_stats.should_replan_object_distribution(&previous_stats));
     }
 
+    // TEST RANK RATIO
+
+    #[test]
+    fn test_should_replan_basic_true_on_rank_flip() {
+        let previous_stats = make_stats_from_predicates(&[(1, 1), (2, 2), (3, 4)]);
+        let current_stats = make_stats_from_predicates(&[(1, 3), (2, 2), (3, 4)]);
+
+        // One of three predicate pairs flips order => 0.333 > 0.2
+        assert!(current_stats.predicate_rank_change_ratio(&previous_stats) > 0.2);
+    }
+
+    #[test]
+    fn test_should_replan_basic_false_when_rank_stable() {
+        let previous_stats = make_stats_from_predicates(&[(1, 1), (2, 2), (3, 4)]);
+        let current_stats = make_stats_from_predicates(&[(1, 2), (2, 3), (3, 6)]);
+
+        assert!(!(current_stats.predicate_rank_change_ratio(&previous_stats) > 0.2));
+    }
+
     #[test]
     fn test_should_replan_subject_rank_change_true_on_flip() {
         let previous_stats = make_stats_from_subjects(&[(1, 1), (2, 2), (3, 4)]);
         let current_stats = make_stats_from_subjects(&[(1, 3), (2, 2), (3, 4)]);
 
-        assert!(current_stats.should_replan_subject_rank_change(&previous_stats));
+        assert!(current_stats.subject_rank_change_ratio(&previous_stats) > 0.2);
     }
 
     #[test]
@@ -628,6 +597,6 @@ mod tests {
         let previous_stats = make_stats_from_objects(&[(1, 1), (2, 2), (3, 4)]);
         let current_stats = make_stats_from_objects(&[(1, 2), (2, 3), (3, 6)]);
 
-        assert!(!current_stats.should_replan_object_rank_change(&previous_stats));
+        assert!(!(current_stats.object_rank_change_ratio(&previous_stats) > 0.2));
     }
 }
