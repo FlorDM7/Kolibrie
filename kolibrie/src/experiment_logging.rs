@@ -12,13 +12,20 @@ pub fn init_experiment_log(file_path: impl Into<PathBuf>) -> io::Result<()> {
         create_dir_all(parent)?;
     }
 
+    // Only write the header for a new file
+    let write_header = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata.len() == 0,
+        Err(_) => true,
+    };
+
     let mut file = OpenOptions::new()
         .create(true)
-        .truncate(true)
-        .write(true)
+        .append(true)
         .open(&path)?;
 
-    writeln!(file, "phase,window,ts,elapsed_ms,aux_ms,tuples,results,note")?;
+    if write_header {
+        writeln!(file, "phase,window,ts,elapsed_ms,aux_ms,tuples,results,note")?;
+    }
 
     if let Some(lock) = LOG_FILE_PATH.get() {
         let mut current_path = lock.lock().map_err(|_| io::Error::other("failed to lock experiment log path"))?;
