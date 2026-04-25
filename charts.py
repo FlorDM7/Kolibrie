@@ -122,6 +122,78 @@ def make_query_vs_optimize_comparison(title, data1, data2, data3, data4, filenam
         plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.show()
 
+def make_avg_plot_by_threshold(title, data1, data2, data3, data4, filename=None):
+    """
+    Create a single figure showing query execution time vs threshold value.
+    Each method is represented as a separate line.
+    """
+    
+    def get_query_by_threshold(data_file):
+        """Load CSV and group query phase data by threshold."""
+        try:
+            df = pd.read_csv(data_file + ".csv")
+        except FileNotFoundError:
+            return pd.DataFrame(columns=['threshold', 'elapsed_ms'])
+        
+        if df.empty:
+            return pd.DataFrame(columns=['threshold', 'elapsed_ms'])
+        
+        # Filter for query phase only
+        query_df = df[df['phase'] == 'query'].copy()
+        if query_df.empty:
+            return pd.DataFrame(columns=['threshold', 'elapsed_ms'])
+        
+        # Convert to numeric
+        query_df['threshold'] = pd.to_numeric(query_df['threshold'], errors='coerce')
+        query_df['elapsed_ms'] = pd.to_numeric(query_df['elapsed_ms'], errors='coerce')
+        query_df = query_df.dropna(subset=['threshold', 'elapsed_ms'])
+        
+        # Group by threshold and average
+        return query_df.groupby('threshold', as_index=False)['elapsed_ms'].mean().sort_values('threshold')
+    
+    # Load and process data for all methods
+    data_static = get_query_by_threshold(data1)
+    data_always = get_query_by_threshold(data2)
+    data_dist = get_query_by_threshold(data3)
+    data_rank = get_query_by_threshold(data4)
+    
+    # Create single plot with all methods
+    plt.figure(figsize=(10, 6))
+    
+    # Plot each method as a line
+    # if not data_static.empty:
+    #     thresholds_pct = data_static['threshold'] * 100
+    #     plt.plot(thresholds_pct, data_static['elapsed_ms'], 
+    #             marker='o', label='Static', linewidth=2)
+    
+    # if not data_always.empty:
+    #     thresholds_pct = data_always['threshold'] * 100
+    #     plt.plot(thresholds_pct, data_always['elapsed_ms'], 
+    #             marker='s', label='Always', linewidth=2)
+
+    if not data_dist.empty:
+        thresholds_pct = data_dist['threshold']
+        plt.plot(thresholds_pct, data_dist['elapsed_ms'], 
+                marker='^', label='On Distribution Change', linewidth=2)
+    
+    if not data_rank.empty:
+        thresholds_pct = data_rank['threshold']
+        print(max(data_rank['elapsed_ms']))
+        plt.plot(thresholds_pct, data_rank['elapsed_ms'], 
+                marker='d', label='On Ranking Change', linewidth=2)
+
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.xlabel("Threshold", fontsize=12)
+    plt.ylabel("Average Query Execution Time (ms)", fontsize=12)
+    plt.legend(fontsize=11)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    if filename:
+        os.makedirs("out", exist_ok=True)
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.show()
+
 def split_data(title, data1, data2, data3, data4, filename1=None, filename2=None):
     # Load CSV file
     df1 = pd.read_csv(data1 + ".csv")
@@ -180,26 +252,43 @@ def main():
 
     extra = ""
 
-    # Original separate phase plots
-    split_data("Static", static1, static2, static3, static4, f"static_optimize{extra}", f"static_execution{extra}")
-    split_data("Volatile", volatile1, volatile2, volatile3, volatile4, f"volatile_optimize{extra}", f"volatile_execution{extra}")
-    split_data("Gradual", gradual1, gradual2, gradual3, gradual4, f"gradual_optimize{extra}", f"gradual_execution{extra}")
+    # # Original separate phase plots
+    # split_data("Static", static1, static2, static3, static4, f"static_optimize{extra}", f"static_execution{extra}")
+    # split_data("Volatile", volatile1, volatile2, volatile3, volatile4, f"volatile_optimize{extra}", f"volatile_execution{extra}")
+    # split_data("Gradual", gradual1, gradual2, gradual3, gradual4, f"gradual_optimize{extra}", f"gradual_execution{extra}")
     
-    # New query vs optimize comparison plots
-    make_query_vs_optimize_comparison(
-        "Static Dataset: Query vs Optimize Time per Window Size",
+    # # New query vs optimize comparison plots
+    # make_query_vs_optimize_comparison(
+    #     "Static Dataset: Query vs Optimize Time per Window Size",
+    #     static1, static2, static3, static4,
+    #     f"out/static_query_vs_optimize{extra}.png"
+    # )
+    # make_query_vs_optimize_comparison(
+    #     "Volatile Dataset: Query vs Optimize Time per Window Size",
+    #     volatile1, volatile2, volatile3, volatile4,
+    #     f"out/volatile_query_vs_optimize{extra}.png"
+    # )
+    # make_query_vs_optimize_comparison(
+    #     "Gradual Dataset: Query vs Optimize Time per Window Size",
+    #     gradual1, gradual2, gradual3, gradual4,
+    #     f"out/gradual_query_vs_optimize{extra}.png"
+    # )
+    
+    # New query execution time vs threshold plots
+    make_avg_plot_by_threshold(
+        "Static Dataset: Query Execution Time per Threshold",
         static1, static2, static3, static4,
-        f"out/static_query_vs_optimize{extra}.png"
+        f"out/static_query_vs_threshold{extra}.png"
     )
-    make_query_vs_optimize_comparison(
-        "Volatile Dataset: Query vs Optimize Time per Window Size",
+    make_avg_plot_by_threshold(
+        "Volatile Dataset: Query Execution Time per Threshold",
         volatile1, volatile2, volatile3, volatile4,
-        f"out/volatile_query_vs_optimize{extra}.png"
+        f"out/volatile_query_vs_threshold{extra}.png"
     )
-    make_query_vs_optimize_comparison(
-        "Gradual Dataset: Query vs Optimize Time per Window Size",
+    make_avg_plot_by_threshold(
+        "Gradual Dataset: Query Execution Time per Threshold",
         gradual1, gradual2, gradual3, gradual4,
-        f"out/gradual_query_vs_optimize{extra}.png"
+        f"out/gradual_query_vs_threshold{extra}.png"
     )
 
 if __name__ == "__main__":

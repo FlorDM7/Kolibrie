@@ -24,7 +24,7 @@ pub fn init_experiment_log(file_path: impl Into<PathBuf>) -> io::Result<()> {
         .open(&path)?;
 
     if write_header {
-        writeln!(file, "phase,window,ts,elapsed_ms,aux_ms,tuples,results,note")?;
+        writeln!(file, "phase,window,ts,elapsed_ms,aux_ms,tuples,results,note,threshold")?;
     }
 
     if let Some(lock) = LOG_FILE_PATH.get() {
@@ -54,6 +54,7 @@ pub fn append_experiment_row(
     tuples: usize,
     results: Option<usize>,
     note: &str,
+    threshold: Option<f64>,
 ) -> io::Result<()> {
     let path = current_log_path();
 
@@ -64,10 +65,11 @@ pub fn append_experiment_row(
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     let aux_ms = aux_ms.map(|value| format!("{:.6}", value)).unwrap_or_default();
     let results = results.map(|value| value.to_string()).unwrap_or_default();
+    let threshold = threshold.map(|value| format!("{:.6}", value)).unwrap_or_default();
 
     writeln!(
         file,
-        "{},{},{},{:.6},{},{},{},{}",
+        "{},{},{},{:.6},{},{},{},{},{}",
         phase,
         window,
         ts,
@@ -76,6 +78,7 @@ pub fn append_experiment_row(
         tuples,
         results,
         note,
+        threshold,
     )?;
 
     file.flush()

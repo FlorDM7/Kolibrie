@@ -161,6 +161,7 @@ macro_rules! create_window_processor {
                 window_size,
                 Some(results.len()),
                 "",
+                None,
             ) {
                 error!(
                     "Failed to write query timing for window {}: {:?}",
