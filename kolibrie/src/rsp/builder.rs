@@ -204,7 +204,7 @@ where
             .map(|block| {
                 // Convert window block patterns to query plan
                 for (j, (s, p, o)) in block.patterns.iter().enumerate() {
-                    println!(" Registering     {}: {} {} {}", j + 1, s, p, o);
+                    //println!(" Registering     {}: {} {} {}", j + 1, s, p, o);
                 }
                 let op = build_logical_plan(
                     Vec::new(),
@@ -215,7 +215,7 @@ where
                     &[],
                     None,
                 );
-                println!("\tResults in {:?}", op);
+                // println!("\tResults in {:?}", op);
                 op
             })
             .unwrap_or_else(|| spo_query);
@@ -286,7 +286,7 @@ where
             None => None,
         };
 
-        println!("logical window plans {:?}", window_plans);
+        // println!("logical window plans {:?}", window_plans);
 
         let window_plans = Arc::new(RwLock::new(
             window_plans
@@ -294,7 +294,7 @@ where
                 .map(|v| optimizer.find_best_plan(v))
                 .collect()
         ));
-        println!("physical window plans {:?}", window_plans);
+        // println!("physical window plans {:?}", window_plans);
 
         Ok(RSPQueryPlan {
             window_plans,

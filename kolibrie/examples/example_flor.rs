@@ -234,7 +234,10 @@ fn set_up_engine(path: String, query: &str, replan_trigger: ReplanTrigger, naief
 
             // Plan remains the same
             // println!("[Adaptor] Plan remains the same {}", window_iri);
-            *previous_stats_guard = current_stats; // Update previous stats for next window
+            
+            // CHOOSE TO UPDATE STATS (TODO ADD AS PARAMETER)
+            // Only update the stats of the previous if replanning was necessary
+            // *previous_stats_guard = current_stats; // Update previous stats for next window
 
             return None;
         },
@@ -407,13 +410,13 @@ impl fmt::Display for ReplanTrigger {
     }
 }
 
-fn example_window3(path: String, replan_trigger: ReplanTrigger, naief: bool, window_size: usize, threshold: Option<f64>) {
+fn example_window3(path: String, replan_trigger: ReplanTrigger, naief: bool, range_size: usize, step_size: usize,threshold: Option<f64>) {
     let query = format!(r#"
     PREFIX ex: <http://example.org/stream/>
 
     REGISTER RSTREAM <output> AS
     SELECT ?reading ?sensor ?zone ?value
-    FROM NAMED WINDOW :window1 ON :stream [RANGE {window_size} STEP {window_size}]
+    FROM NAMED WINDOW :window1 ON :stream [RANGE {range_size} STEP {step_size}]
     WHERE {{
     WINDOW :window1 {{
         ?reading <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> ex:Reading .
@@ -431,28 +434,34 @@ fn experiment(window_size: usize, threshold_dist: f64, threshold_rank: f64, naie
     let static_path = "datasets/optimizer_case_static.events.ndjson".to_string();
     let volatile_path = "datasets/optimizer_case_volatile.events.ndjson".to_string();
     let gradual_path = "datasets/optimizer_case_gradual.events.ndjson".to_string();
+    let range_size = window_size;
+    let step_size = window_size;
     // Static data
-    example_window3(static_path.clone(), ReplanTrigger::Static, naief, window_size, None);
-    example_window3(static_path.clone(), ReplanTrigger::Always, naief, window_size, None);
-    example_window3(static_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, window_size, Some(threshold_dist));
-    example_window3(static_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, window_size, Some(threshold_rank));
+    example_window3(static_path.clone(), ReplanTrigger::Static, naief, range_size, step_size, None);
+    example_window3(static_path.clone(), ReplanTrigger::Always, naief, range_size, step_size, None);
+    example_window3(static_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, range_size, step_size, Some(threshold_dist));
+    example_window3(static_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, range_size, step_size, Some(threshold_rank));
     // Dynamic data
-    example_window3(volatile_path.clone(), ReplanTrigger::Static, naief, window_size, None);
-    example_window3(volatile_path.clone(), ReplanTrigger::Always, naief, window_size, None);
-    example_window3(volatile_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, window_size, Some(threshold_dist));
-    example_window3(volatile_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, window_size, Some(threshold_rank));
+    example_window3(volatile_path.clone(), ReplanTrigger::Static, naief, range_size, step_size, None);
+    example_window3(volatile_path.clone(), ReplanTrigger::Always, naief, range_size, step_size, None);
+    example_window3(volatile_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, range_size, step_size, Some(threshold_dist));
+    example_window3(volatile_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, range_size, step_size, Some(threshold_rank));
     // Gradual data change
-    example_window3(gradual_path.clone(), ReplanTrigger::Static, naief, window_size, None);
-    example_window3(gradual_path.clone(), ReplanTrigger::Always, naief, window_size, None);
-    example_window3(gradual_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, window_size, Some(threshold_dist));
-    example_window3(gradual_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, window_size, Some(threshold_rank));
+    example_window3(gradual_path.clone(), ReplanTrigger::Static, naief, range_size, step_size, None);
+    example_window3(gradual_path.clone(), ReplanTrigger::Always, naief, range_size, step_size, None);
+    example_window3(gradual_path.clone(), ReplanTrigger::OnDistributionChange { threshold: threshold_dist }, naief, range_size, step_size, Some(threshold_dist));
+    example_window3(gradual_path.clone(), ReplanTrigger::OnRankingChange { threshold: threshold_rank }, naief, range_size, step_size, Some(threshold_rank));
 }
 
 fn experiment_over_window_size() {
+    let mut progress: f32 = 0.0;
+    let time = Instant::now();
     for window_size in (5..=250).step_by(5) {
+        println!("Window size {}", window_size);
         for i in 1..=10 { // do every experiment 10 times
-            println!("Run {} for window size {}", i, window_size);
-            experiment(window_size, 0.2, 0.3, false);
+            experiment(window_size, 0.3, 0.2, true);
+            progress += 0.2;
+            println!("progress: {}% at {}s", progress, time.elapsed().as_secs());
         }
     }
 }
@@ -475,6 +484,6 @@ fn main() {
     // example_window3("datasets/optimizer_case_static.events.ndjson".to_string(), ReplanTrigger::Static);
     // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.25 });
     // example_window3("datasets/optimizer_case_gradual.events.ndjson".to_string(), ReplanTrigger::OnDistributionChange { threshold: 0.05 });
-    // experiment_over_window_size();
-    experiment_over_thresholds();
+    experiment_over_window_size();
+    // experiment_over_thresholds();
 }

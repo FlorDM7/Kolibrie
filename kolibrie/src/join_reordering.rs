@@ -414,7 +414,7 @@ fn estimate_scan_cardinality_for_sort(scan: &PhysicalOperator, container_stats: 
             let subject_estimate = match &pattern.0 {
                 shared::terms::Term::Constant(subject) => container_stats.get_subject_cardinality(*subject).max(1),
                 _ => avg_subject,
-            };
+            };  
             let predicate_estimate = match &pattern.1 {
                 shared::terms::Term::Constant(predicate) => container_stats.get_predicate_cardinality(*predicate).max(1),
                 _ => avg_predicate,
