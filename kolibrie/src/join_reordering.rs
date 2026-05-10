@@ -468,18 +468,6 @@ fn build_pair_first_tree(scans: &[PhysicalOperator], first_idx: usize, second_id
     Some(result)
 }
 
-// fn estimate_scan_cardinality_for_sort(scan: &PhysicalOperator, container_stats: &ContainerStats) -> i64 {
-//     match scan {
-//         PhysicalOperator::TableScan { pattern } => {
-//             match &pattern.1 {
-//                 shared::terms::Term::Constant(predicate) => container_stats.get_predicate_cardinality(*predicate).max(1),
-//                 _ => container_stats.get_total_triples().max(1),
-//             }
-//         }
-//         _ => container_stats.get_total_triples().max(1),
-//     }
-// }
-
 /*
 GENERATE ALL PLANS
 By me, but filters with genAI 

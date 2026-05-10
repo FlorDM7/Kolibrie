@@ -149,7 +149,7 @@ def make_query_vs_optimize_comparison(title, data1, data2, data3, data4, filenam
         optimize_data = binned_data[binned_data['phase'] == 'optimize'].sort_values('bin_start')
         query_data = binned_data[binned_data['phase'] == 'query'].sort_values('bin_start')
 
-        plt.figure(figsize=(8, 5))
+        plt.figure()
         if not optimize_data.empty:
             plt.plot(optimize_data['bin_start'], optimize_data['elapsed_ms'], marker='o', label='Optimize', linewidth=2)
         if not query_data.empty:
@@ -160,7 +160,8 @@ def make_query_vs_optimize_comparison(title, data1, data2, data3, data4, filenam
             readable_ticks = select_readable_ticks(x_values, max_ticks)
             plt.xticks(readable_ticks, [f"{int(v)}" for v in readable_ticks], rotation=30, ha='right')
 
-        plt.title(f"{title} - {method_name}", fontsize=13, fontweight='bold')
+        plt.title("Query time vs Trigger time per window")
+        # plt.title(f"{title} - {method_name}", fontsize=13, fontweight='bold')
         plt.xlabel("Window Size (tuples)")
         plt.ylabel("Average Elapsed Time (ms)")
         plt.legend()
