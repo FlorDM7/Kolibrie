@@ -18,7 +18,7 @@ time is realised, but at the cost of some latency.
 
 The [Kolibrie](https://github.com/StreamIntelligenceLab/Kolibrie) SPARQL engine from [Stream Intelligence Lab](https://kulak.kuleuven.be/nl/onderzoek/Onderzoeksdomeinen/stream-intelligence-lab) got extended with different trigger methods and cost estimates.
 
-My implementation mainly resides in these files:
+Implementation details are primarily located in these files:
 
 - `kolibrie/examples/example_flor.rs` different experiments
 - `kolibrie/src/container_stats.rs` collect stats/cardinalities from a window
