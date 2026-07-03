@@ -1,3 +1,31 @@
+# Bachelor's thesis on query plan optimization for Stream Reasoning
+
+For my bachelor's thesis at KU Leuven KULAK, we studied the impact of adaptive
+query plan optimisation in a stream reasoning context
+in comparison with static optimisation. In this
+context we take time-based windows over a data
+stream. From these windows we gather simple stats
+like cardinalities. Using a trigger it is decided if we
+want to adjust the current query plan. If so new
+proposed query plans are generated and we pick
+the one with the lowest estimated cost. We evaluated
+this method on synthetic data streams with
+different characteristics. We found that for gradual
+evolving window stats, a reduced query execution
+time is realised, but at the cost of some latency.
+
+## Implementation
+
+The [Kolibrie](https://github.com/StreamIntelligenceLab/Kolibrie) SPARQL engine from [Stream Intelligence Lab](https://kulak.kuleuven.be/nl/onderzoek/Onderzoeksdomeinen/stream-intelligence-lab) got extended with different trigger methods and cost estimates.
+
+My implementation mainly resides in these files:
+
+- `kolibrie/examples/example_flor.rs` different experiments
+- `kolibrie/src/container_stats.rs` collect stats/cardinalities from a window
+- `kolibrie/src/experiment_logging.rs` log result data for graphs
+- `kolibrie/src/join_reordering.rs` optimal/new plan logic and different triggers
+- `kolibrie/src/stream_estimator.rs` estimate cost of an query plan on a window
+
 # Kolibrie
 
 <p align="center">
