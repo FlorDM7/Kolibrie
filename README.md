@@ -26,10 +26,16 @@ Implementation details are primarily located in these files:
 - `kolibrie/src/join_reordering.rs` optimal/new plan logic and different triggers
 - `kolibrie/src/stream_estimator.rs` estimate cost of an query plan on a window
 
+## Poster
+
+<p align="center">
+    <img src="poster.png"/>
+</p>
+
 # Kolibrie
 
 <p align="center">
-    <img src="docs/logo/kolibrie.jfif" width="400" height="400" />
+    <img src="docs/logo/kolibrie.jfif" width="400" height="400"/>
 </p>
 
 <!-- ![GitHub Workflow Status](https://img.shields.io/github/commit-activity/t/StreamIntelligenceLab/Kolibri) -->
